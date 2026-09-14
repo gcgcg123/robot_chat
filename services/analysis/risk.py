@@ -3,6 +3,9 @@ from __future__ import annotations
 RANK = {"none": 0, "attention": 1, "urgent": 2}
 
 
+
+
+
 def analyze_local(text: str) -> dict:
     lowered = text.lower()
     urgent = ("自殺", "自傷", "不想活", "傷害自己", "suicide", "kill myself")
