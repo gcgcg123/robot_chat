@@ -18,7 +18,10 @@
   }
   class Display {
     constructor(options={}){
-      this.now=options.now||(()=>Date.now());this.later=options.later||setTimeout;this.clear=options.clear||clearTimeout;
+      this.now=options.now||(()=>Date.now());
+      // Native Window timers cannot be invoked with a Display instance as `this`.
+      this.later=options.later||((fn,ms)=>globalThis.setTimeout(fn,ms));
+      this.clear=options.clear||(id=>globalThis.clearTimeout(id));
       this.play=options.play;this.onChange=options.onChange||(()=>{});this.onComplete=options.onComplete||(()=>{});
       this.epoch=0;this.reset("idle");
     }
