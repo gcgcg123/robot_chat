@@ -11,3 +11,4 @@ if not "%launcherExit%"=="0" (
   if not "%IOT_LAUNCHER_NO_PAUSE%"=="1" pause
 )
 endlocal & exit /b %launcherExit%
+
