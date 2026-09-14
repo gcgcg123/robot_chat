@@ -31,6 +31,8 @@ from services.dashboard.read_model import (
 )
 from services.audio.asr import AsrService
 from services.audio.normalize import normalize_audio
+from services.audio.quality import check_quality
+from services.enrollment.languages import Language, LANGUAGES
 from services.audio.worker import AsrWorker, QueueFullError
 from services.device_gateway.events import normalize_heartbeat
 from services.device_gateway.contracts import DeviceEvent as ProtocolEvent
@@ -123,6 +125,7 @@ class RiskReviewRequest(BaseModel):
 
 class EnrollmentRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
+    language: Language = 'yue-HK'
 
 
 def create_app(settings: RuntimeSettings | None = None, providers: dict | None = None) -> FastAPI:
@@ -172,9 +175,22 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             require_csrf(request, conn)
         return row
 
+    def user_language(user_id: str) -> str:
+        with db() as conn:
+            if conn.execute('SELECT 1 FROM deleted_users WHERE user_id=?', (user_id,)).fetchone():
+                raise HTTPException(status_code=404, detail='user_not_found')
+            user = get_user(conn, user_id)
+            if user and user['status'] != 'active':
+                raise HTTPException(status_code=409, detail='user_disabled')
+            return user['preferred_language'] if user else 'zh-CN'
+
     def save_conversation(req: ChatRequest, reply: str, emotion: str, model: str, latency_ms: int, risk: dict[str, Any] | None = None) -> str:
         conversation_id, now = str(uuid.uuid4()), time.time()
         with db() as conn:
+            if conn.execute('SELECT 1 FROM deleted_users WHERE user_id=?', (req.user_id,)).fetchone():
+                raise HTTPException(status_code=404, detail='user_not_found')
+            user = get_user(conn, req.user_id)
+            if user and user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
             conn.execute("INSERT OR IGNORE INTO users(user_id,display_name,created_at) VALUES(?,?,?)", (req.user_id, req.user_id, now))
             conn.execute("INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?)", (conversation_id, req.user_id, req.text, reply, emotion, now, json.dumps({"device_id": req.device_id, "voiceprint_id": req.voiceprint_id, "model": model, "latency_ms": latency_ms}, ensure_ascii=False)))
             conn.execute("INSERT INTO emotion_events(conversation_id,user_id,emotion,created_at) VALUES(?,?,?,?)", (conversation_id, req.user_id, emotion, now))
@@ -218,6 +234,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         result = process_text(
             req.text,
             user_id=req.user_id,
+            language=user_language(req.user_id),
             identity=identity,
             session_id=request.headers.get("X-Simulator-Session", "http-chat") if request is not None else "internal-chat",
             llm=llm,
@@ -353,6 +370,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             if confirmation.confirm_user_id != user_id: raise HTTPException(status_code=400, detail="confirmation_mismatch")
             if not get_user(conn, user_id): raise HTTPException(status_code=404, detail="user_not_found")
             counts = delete_user_data(conn, user_id)
+            application.state.enrollment_service.cancel_user(user_id)
             record_audit(conn, actor_id, "delete_user", target_type="user", target_id=user_id, metadata={"deleted": counts})
             return {"ok": True, "deleted": counts}
 
@@ -406,18 +424,33 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         session_id, device_id = str(uuid.uuid4()), f"pc-sim-{uuid.uuid4().hex[:8]}"
         return {"session_id": session_id, "device_id": device_id, "expires_in": 600, "capabilities": {"mic": True, "speaker": True, "display": {"width": 320, "height": 240}, "playback_ack": True, "enrollment_v1": True}}
 
+    @application.get('/api/enrollment-languages')
+    def enrollment_languages(request: Request):
+        with db() as conn: admin_auth(request, conn)
+        return LANGUAGES
+
+    @application.delete('/api/enrollments/{enrollment_id}')
+    def cancel_enrollment(enrollment_id: str, request: Request):
+        with db() as conn: admin_auth(request, conn, write=True)
+        item = application.state.enrollment_service.items.get(enrollment_id)
+        if not item: raise HTTPException(status_code=404, detail='enrollment_not_found')
+        item.state = 'canceled'; item.samples.clear()
+        return {'ok': True}
+
     @application.post("/api/enrollments", status_code=201)
     def start_enrollment(payload: EnrollmentRequest, request: Request):
         with db() as conn:
             admin_auth(request, conn, write=True)
-            if not get_user(conn, payload.user_id):
+            user = get_user(conn, payload.user_id)
+            if not user:
                 raise HTTPException(status_code=404, detail="user_not_found")
-        item = application.state.enrollment_service.start(payload.user_id)
+            if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
+        item = application.state.enrollment_service.start(payload.user_id, payload.language)
         application.state.enrollment_service.transition(item.enrollment_id, "collecting_samples")
-        return {"enrollment_id": item.enrollment_id, "user_id": item.user_id, "state": "collecting_samples", "required_samples": 3, "expires_at": item.expires_at}
+        return {"enrollment_id": item.enrollment_id, "user_id": item.user_id, "state": "collecting_samples", "required_samples": 3, "expires_at": item.expires_at, 'language': item.language, 'prompts': LANGUAGES[item.language]['prompts']}
 
     @application.post("/api/enrollments/{enrollment_id}/samples")
-    async def enrollment_sample(enrollment_id: str, request: Request, file: UploadFile = File(...)):
+    async def enrollment_sample(enrollment_id: str, request: Request, file: UploadFile = File(...), step: int | None = Form(default=None)):
         with db() as conn: admin_auth(request, conn, write=True)
         item = application.state.enrollment_service.items.get(enrollment_id)
         if not item: raise HTTPException(status_code=404, detail="enrollment_not_found")
@@ -425,11 +458,16 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         if len(sample) > 10 * 1024 * 1024: raise HTTPException(status_code=413, detail="audio_too_large")
         if len(sample) < 1000: raise HTTPException(status_code=422, detail="sample_too_short")
         try:
-            application.state.enrollment_service.add_sample(enrollment_id, sample)
+            normalized = normalize_audio(sample, file.content_type or '')
+            quality = check_quality(normalized, enrollment=True)
+            if normalized.duration_ms > 20_000:
+                raise ValueError('audio_too_long')
+            if not quality['accepted']: raise ValueError(quality['reason'])
+            application.state.enrollment_service.add_sample(enrollment_id, normalized.pcm16, step)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         item = application.state.enrollment_service.items[enrollment_id]
-        quality = {"duration_ms": None, "bytes": len(sample), "status": "accepted"}
+        quality.update({'duration_ms': normalized.duration_ms, 'status': 'accepted'})
         return {"enrollment_id": enrollment_id, "state": item.state, "sample_count": len(item.samples), "quality": quality}
 
     @application.post("/api/enrollments/{enrollment_id}/complete")
@@ -437,19 +475,29 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         with db() as conn: actor = admin_auth(request, conn, write=True)
         item = application.state.enrollment_service.items.get(enrollment_id)
         if not item: raise HTTPException(status_code=404, detail="enrollment_not_found")
+        if item.state == 'completed' and item.result:
+            with db() as conn:
+                if not get_user(conn, item.user_id): raise HTTPException(status_code=404, detail='user_not_found')
+            return item.result
         if len(item.samples) < 3: raise HTTPException(status_code=422, detail="insufficient_samples")
         try:
+            application.state.enrollment_service.collecting(enrollment_id)
             vectors = [application.state.voiceprint_provider.embed(sample) for sample in item.samples]
             embedding = [sum(values) / len(values) for values in zip(*vectors)]
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         template_id = str(uuid.uuid4()); now = time.time()
         with db() as conn:
+            user = get_user(conn, item.user_id)
+            if not user: raise HTTPException(status_code=404, detail='user_not_found')
+            if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
             conn.execute("UPDATE voiceprint_templates SET active=0 WHERE user_id=?", (item.user_id,))
-            conn.execute("INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)", (template_id, item.user_id, seal(embedding), "pc-baseline-v1", 1, now))
+            conn.execute('UPDATE users SET enrollment_language=? WHERE user_id=?', (item.language, item.user_id))
+            conn.execute("INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)", (template_id, item.user_id, seal(embedding), "pc-baseline-v2", 1, now))
             conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(item.samples), "template_id": template_id})
         item.state = "completed"; item.samples.clear()
-        return {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_id, "model_version": "pc-baseline-v1"}
+        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_id, "model_version": "pc-baseline-v2"}
+        return item.result
 
     @application.post("/api/voiceprint/identify")
     async def identify_voice(request: Request, file: UploadFile = File(...)):
@@ -457,9 +505,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         sample = await file.read()
         if not sample: raise HTTPException(status_code=422, detail="empty_audio")
         try:
-            vector = application.state.voiceprint_provider.embed(sample)
+            normalized = normalize_audio(sample, file.content_type or '')
+            vector = application.state.voiceprint_provider.embed(normalized.pcm16)
             with db() as conn:
-                rows = conn.execute("SELECT template_id,user_id,embedding_json,active FROM voiceprint_templates WHERE active=1").fetchall()
+                rows = conn.execute("SELECT t.template_id,t.user_id,t.embedding_json,t.active FROM voiceprint_templates t JOIN users u ON u.user_id=t.user_id WHERE t.active=1 AND u.status='active' AND t.model_version='pc-baseline-v2'").fetchall()
             templates = []
             for row in rows:
                 try: values = open_sealed(row["embedding_json"])
@@ -523,6 +572,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     result = process_text(
                         text,
                         user_id=req.user_id,
+                        language=user_language(req.user_id),
                         identity=IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator"),
                         session_id=session_id,
                         turn_id=turn_id,
@@ -543,7 +593,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                             media_id = application.state.media_store.put(wav_buffer.getvalue(), auth_row["session_id"], ".wav").ref
                         except Exception:
                             pass
-                        payload = {"index": index, "sequence": index, "segment_id": f"{turn_id}-{index}", "text": segment, "media_url": f"/api/media/{media_id}" if media_id else None, "final": index == len(result.segments) - 1, "result": result_payload}
+                        payload = {"index": index, "sequence": index, "segment_id": f"{turn_id}-{index}", "text": segment, "language": user_language(req.user_id), "media_url": f"/api/media/{media_id}" if media_id else None, "final": index == len(result.segments) - 1, "result": result_payload}
                         await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "tts.segment", payload).as_dict())
                     await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "tts.end", {"result": result_payload}).as_dict())
                 except Exception as exc:

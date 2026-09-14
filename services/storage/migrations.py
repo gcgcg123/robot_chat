@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -13,6 +13,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'active', gender TEXT NOT NULL DEFAULT '不透露',
             age_at_registration INTEGER, age_recorded_at REAL, profile_note TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS deleted_users (user_id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY, user_id TEXT, input_text TEXT NOT NULL,
             response_text TEXT NOT NULL, emotion TEXT NOT NULL, created_at REAL NOT NULL,
@@ -102,6 +103,10 @@ def _make_user_nullable(conn: sqlite3.Connection) -> None:
 
 def _ensure_user_status(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if 'preferred_language' not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT NOT NULL DEFAULT 'zh-CN'")
+    if 'enrollment_language' not in columns:
+        conn.execute('ALTER TABLE users ADD COLUMN enrollment_language TEXT')
     if "status" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
     if "gender" not in columns:

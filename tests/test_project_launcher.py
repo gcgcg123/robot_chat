@@ -247,6 +247,8 @@ def test_check_only_reports_missing_first_run_prerequisites():
             "start-project.ps1",
             "-CheckOnly",
             "-SkipSecret",
+            "-AdminSecretFile",
+            str(Path(temp_dir) / "missing-admin.password"),
             "-RuntimeDir",
             str(Path(temp_dir) / "runtime"),
             "-LogDir",

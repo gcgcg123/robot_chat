@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+from services.enrollment.languages import Language
 
 
 class ProfileInput(BaseModel):
+    preferred_language: Language = 'yue-HK'
     display_name: str = Field(min_length=1, max_length=80)
     gender: str = Field(default="不透露", max_length=40)
     age_at_registration: int | None = Field(default=None, ge=0, le=120, strict=True)
@@ -11,6 +13,7 @@ class ProfileInput(BaseModel):
 
 
 class ProfilePatch(BaseModel):
+    preferred_language: Language | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=80)
     gender: str | None = Field(default=None, max_length=40)
     age_at_registration: int | None = Field(default=None, ge=0, le=120, strict=True)

@@ -39,6 +39,8 @@ uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 
 ## 目前端點
 
+三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。目前聲紋仍是示範模型，PC 以所選使用者模擬對話歸屬。
+
 - `GET /health`：服務狀態
 - `POST /api/chat`：文字對話、情緒標籤、SQLite 紀錄
 - `POST /api/transcribe`：faster-whisper Turbo WAV/audio 轉寫
