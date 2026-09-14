@@ -183,6 +183,15 @@ def test_start_health_heartbeat_and_stop_round_trip(expired_local):
         )
         try:
             assert started.returncode == 0, (log_dir / "heartbeat-error.log").read_text(errors="replace")
+            delivery = json.loads((log_dir / "heartbeat-status.json").read_text())
+            state = json.loads((runtime_dir / "heartbeat.json").read_text())
+            assert delivery["state"] == "ready"
+            assert delivery["run_id"] == state["run_id"]
+            repeated = run_script("start-project.ps1", "-NoBrowser", "-Port", str(port),
+                                  "-RuntimeDir", str(runtime_dir), "-LogDir", str(log_dir),
+                                  "-DataDir", str(data_dir), *token_args, env=environment)
+            assert repeated.returncode == 0, repeated.stderr
+            assert json.loads((runtime_dir / "heartbeat.json").read_text())["pid"] == state["pid"]
             deadline = time.time() + 10
             health = None
             while time.time() < deadline:
