@@ -25,9 +25,9 @@ def test_simulator_websocket_emits_turn_subtitle_and_tts_events(tmp_path):
                 events.append(socket.receive_json())
 
     types = [event["type"] for event in events]
-    assert types[:4] == ["turn.started", "display.state", "stt.final", "display.state"]
-    assert events[1]["payload"]["state"] == "listening"
-    assert events[3]["payload"]["state"] == "thinking"
+    assert types[:3] == ["turn.started", "stt.final", "display.state"]
+    assert events[2]["payload"]["state"] == "thinking"
+    assert not any(e["type"] == "display.state" and e["payload"]["state"] in {"listening", "speaking", "idle"} for e in events)
     assert "tts.segment" in types
     assert types[-1] == "tts.end"
     assert all(event["session_id"] == "session-1" for event in events)

@@ -566,12 +566,11 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     continue
                 device_id = str(message.get("device_id") or "pc-sim")
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "turn.started", {"request_id": request_id}).as_dict())
-                await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "listening", "emotion": "neutral", "caption": "正在聆聽"}).as_dict())
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "stt.final", {"text": text}).as_dict())
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "thinking", "emotion": "neutral", "caption": "正在理解…"}).as_dict())
                 req = ChatRequest(user_id=str(message.get("user_id") or "sim-user"), text=text, device_id=device_id, voiceprint_id=message.get("voiceprint_id"))
                 try:
-                    result = process_text(
+                    result = await asyncio.to_thread(process_text,
                         text,
                         user_id=req.user_id,
                         language=user_language(req.user_id),
@@ -596,10 +595,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         except Exception:
                             pass
                         payload = {"index": index, "sequence": index, "segment_id": f"{turn_id}-{index}", "text": segment, "language": user_language(req.user_id), "media_url": f"/api/media/{media_id}" if media_id else None, "final": index == len(result.segments) - 1, "result": result_payload}
-                        await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "speaking", "emotion": result.emotion, "caption": segment, "segment_index": index}).as_dict())
                         await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "tts.segment", payload).as_dict())
                     await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "tts.end", {"result": result_payload}).as_dict())
-                    await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "idle", "emotion": result.emotion, "caption": result.reply}).as_dict())
                 except Exception as exc:
                     await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "error", "emotion": "neutral", "caption": "處理失敗"}).as_dict())
                     await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "turn.failed", {"error": str(exc)}).as_dict())

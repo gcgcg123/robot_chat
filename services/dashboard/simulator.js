@@ -50,6 +50,7 @@
     $("enroll-confirm").disabled = recording || uploading || (!preview && saved !== 3);
     $("enroll-cancel").disabled = recording || uploading;
     $("read-example").disabled = recording || uploading;
+    $("stop-playback").disabled = !chatting;
   }
   function clearPreview() {
     $("sample-preview").pause();
@@ -109,17 +110,21 @@
     samples.forEach((s,i)=>view.setInt16(44+i*2,Math.max(-1,Math.min(1,s))*(s<0?32768:32767),true));
     return new Blob([buffer],{type:"audio/wav"});
   }
-  async function recordWav(maxMs) {
+  async function recordWav(maxMs, kind, epoch) {
     if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) throw Error("請用 Chrome 或 Edge，並允許麥克風。");
     let stream, context, source, processor, sink, timer, clock;
     const chunks = [];
     try {
       stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+      if(kind==="chat" && screen.epoch!==epoch)throw Error("recording_cancelled");
+      if(kind==="chat") screen.setState("listening", "請說出你現在的感受…");
       context = new AudioContext(); await context.resume();
+      if(kind==="chat" && screen.epoch!==epoch)throw Error("recording_cancelled");
       source = context.createMediaStreamSource(stream); processor = context.createScriptProcessor(4096,1,1); sink = context.createGain(); sink.gain.value=0;
       processor.onaudioprocess = e => {
         const data=new Float32Array(e.inputBuffer.getChannelData(0)); chunks.push(data);
         $("mic-level").value = Math.min(1,Math.sqrt(data.reduce((n,x)=>n+x*x,0)/data.length)*4);
+        if(kind==="chat") screen.setLevel($("mic-level").value);
       };
       source.connect(processor); processor.connect(sink); sink.connect(context.destination);
       const started=Date.now();
@@ -137,25 +142,29 @@
       source?.disconnect(); processor?.disconnect(); sink?.disconnect();
       stream?.getTracks().forEach(track=>track.stop()); if(context) await context.close();
       $("mic-level").value=0;
+      if(kind==="chat") screen.setLevel(0);
     }
   }
   async function record(kind) {
     if(recording){stopRecording?.();return;}
     if(uploading || chatting || opening) return;
     recording=true; controls(); window.speechSynthesis?.cancel(); $("sample-preview").pause();
+    if(kind==="chat"){screen.begin("pc-"+Date.now()+"-"+Math.random().toString(36).slice(2));screen.setState("idle","正在請求麥克風權限…");}
+    const epoch=screen.epoch;
     const button=kind==="enroll"?$("enroll-record"):$("conversation-record");
     button.textContent="■ 停止錄音";
     let blob;
-    try {blob=await recordWav(kind==="enroll"?20000:30000);}
-    catch(e){$("record-status").textContent=message(e);toast(message(e));}
+    try {blob=await recordWav(kind==="enroll"?20000:30000,kind,epoch);}
+    catch(e){if(kind!=="chat" || screen.epoch===epoch){$("record-status").textContent=message(e);toast(message(e));if(kind==="chat")screen.fail(message(e));}}
     finally{recording=false;button.textContent=kind==="enroll"?"重新錄音":"● 開始語音對話";controls();}
-    if(!blob) return;
+    if(!blob || (kind==="chat" && screen.epoch!==epoch)) return;
     if(kind==="enroll"){
       clearPreview(); preview=blob; previewUrl=URL.createObjectURL(blob);
       $("sample-preview").src=previewUrl;$("sample-preview").hidden=false;
       $("record-status").textContent="錄音完成，請試聽；滿意後按確認，或重新錄音。";stepView();
     } else {
       chatting=true;controls();$("turn-status").textContent="語音辨識中…";
+      screen.setState("transcribing");
       try{
         // Reload the profile so a preference edited in another page applies.
         const fresh=await api("/api/users/"+encodeURIComponent(selectedUser));
@@ -163,11 +172,12 @@
         const form=new FormData();form.append("file",blob,"turn.wav");
         if(!$("asr-auto").checked) form.append("language",languages[language()].asr);
         const transcript=await api("/api/transcribe",{method:"POST",body:form});
+        if(screen.epoch!==epoch)return;
         if(!transcript.text?.trim())throw Error("沒有辨識到語音，請重試。");
         if(!socket || socket.readyState!==WebSocket.OPEN)throw Error("連線已中斷，請重新整理頁面。");
         $("captions").textContent=transcript.text;$("turn-status").textContent="等待回覆…";
-        socket.send(JSON.stringify({type:"chat",text:transcript.text,user_id:selectedUser,device_id:session.device_id}));
-      }catch(e){chatting=false;$("turn-status").textContent=message(e);toast(message(e));controls();}
+        socket.send(JSON.stringify({type:"chat",request_id:screen.requestId,text:transcript.text,user_id:selectedUser,device_id:session.device_id}));
+      }catch(e){if(screen.epoch!==epoch)return;chatting=false;screen.fail(message(e));$("turn-status").textContent=message(e);toast(message(e));controls();}
     }
   }
   async function confirmSample() {
@@ -202,19 +212,14 @@
     }catch(e){toast(message(e));}
     finally{uploading=false;stepView();}
   }
-  function draw(text="準備就緒",mood="neutral"){
-    const c=$("display").getContext("2d");
-    c.fillStyle="#152137";c.fillRect(0,0,320,240);c.textAlign="center";c.font="26px system-ui";c.fillStyle="#8de0c3";c.fillText(mood==="negative"?"…":"♡",160,70);
-    c.fillStyle="#eef3f8";c.font="15px system-ui";
-    const chars=Array.from(text); for(let i=0;i<4;i++)c.fillText(chars.slice(i*18,(i+1)*18).join(""),160,115+i*24);
-  }
-  function displayState(payload={}) {
-    const state=payload.state||'idle', emotion=payload.emotion||'neutral', caption=payload.caption||'';
-    const canvas=$('display'), context=canvas.getContext('2d');
-    const colors={idle:'#8de0c3',listening:'#8dd2ff',transcribing:'#c5b4ff',thinking:'#ffd580',speaking:emotion==='negative'?'#ff9b9b':'#8de0c3',error:'#ff9b9b'};
-    context.fillStyle='#152137';context.fillRect(0,0,320,240);context.textAlign='center';context.fillStyle=colors[state]||colors.idle;context.font='42px system-ui';context.fillText(state==='happy'?'☺':state==='sad'?'☹':state==='urgent'?'!':state==='error'?'×':'♡',160,72);context.fillStyle='#eef3f8';context.font='14px system-ui';context.fillText(state,160,108);
-    const chars=Array.from(caption);for(let i=0;i<4;i++)context.fillText(chars.slice(i*20,(i+1)*20).join(''),160,140+i*22);
-  }
+  const play=window.EspDisplay.createSpeechPlayer({
+    voiceFor:code=>voiceFor(code||language()),speech:window.speechSynthesis,
+    Utterance:window.SpeechSynthesisUtterance
+  });
+  const screen=window.EspDisplay.mount($("display"),{
+    status:$("display-state"),progress:$("segment-progress"),transcript:$("captions"),play,
+    onComplete:()=>{chatting=false;$("turn-status").textContent="本輪播放／字幕預覽完成";controls();}
+  });
   async function initialize(){
     try{
       const auth=await api("/api/auth/session");window.__iotCsrf=auth.csrf_token;
@@ -222,23 +227,22 @@
       selectedUser=new URLSearchParams(location.search).get("user")||"";await loadUsers();
       session=await api("/api/simulator/sessions",{method:"POST"});
       socket=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/ws/simulator/"+session.session_id);
-      socket.onopen=()=>{$("connection").textContent="語音連線已就緒";$("connection").className="state ok";$("turn-status").textContent="請選擇使用者後開始";controls();};
-      socket.onclose=()=>{session=null;chatting=false;$("connection").textContent="連線中斷，請重新整理";$("connection").className="state error";controls();};
-      socket.onerror=()=>toast("WebSocket 連線失敗，請檢查後端。");
+      socket.onopen=()=>{screen.begin();$("connection").textContent="語音連線已就緒";$("connection").className="state ok";$("turn-status").textContent="請選擇使用者後開始";controls();};
+      socket.onclose=()=>{stopRecording?.();screen.offline();session=null;chatting=false;$("connection").textContent="連線中斷，請重新整理";$("connection").className="state error";controls();};
+      socket.onerror=()=>{screen.offline("WebSocket 連線失敗，請重新整理");toast("WebSocket 連線失敗，請檢查後端。");};
       socket.onmessage=event=>{
-        const m=JSON.parse(event.data);
-        if(m.type==="display.state")displayState(m.payload);
-        if(m.type==="stt.final"){$("captions").textContent=m.payload.text;displayState({state:'transcribing',caption:m.payload.text});}
-        if(m.type==="tts.segment"){
-          $("captions").textContent+=" → "+m.payload.text;draw(m.payload.text,m.payload.result?.emotion);
-          speak(m.payload.text,m.payload.language||language());
-        }
+        let m;try{m=JSON.parse(event.data);}catch(_){toast("收到無法辨識的裝置事件");return;}
+        if(!chatting)return;
+        if(m.type==="turn.started" && screen.requestId!==m.payload?.request_id)return;
+        if(m.type!=="turn.started" && m.turn_id && m.turn_id!==screen.turn)return;
+        screen.event(m);
         if(m.type==="turn.failed"){chatting=false;$("turn-status").textContent=m.payload.error;toast(m.payload.error);controls();}
-        if(m.type==="tts.end"){chatting=false;$("turn-status").textContent="回覆完成 · "+(m.payload.result?.latency_ms?.total||0)+" ms";controls();}
+        if(m.type==="tts.end" && chatting){$("turn-status").textContent="回覆已接收，等待本機播放完成…";}
+
       };
-    }catch(e){$("connection").textContent="初始化失敗";toast(message(e));}
+    }catch(e){screen.offline("初始化失敗，請檢查登入及服務");$("connection").textContent="初始化失敗";toast(message(e));}
   }
-  $("user-select").onchange=e=>{selectedUser=e.target.value;clearPreview();saved=0;$("enrollment-status").textContent="準備開始新的三步登記。";stepView();userView();};
+  $("user-select").onchange=e=>{screen.begin();selectedUser=e.target.value;clearPreview();saved=0;$("enrollment-status").textContent="準備開始新的三步登記。";stepView();userView();};
   $("new-user").onclick=()=>{$("profile-form").hidden=!$("profile-form").hidden;};
   $("profile-form").onsubmit=async e=>{
     e.preventDefault();if(uploading)return;uploading=true;controls();
@@ -256,8 +260,12 @@
   $("enroll-confirm").onclick=confirmSample;
   $("enroll-cancel").onclick=cancelEnrollment;
   $("conversation-record").onclick=()=>record("chat");
+  $("stop-playback").onclick=()=>{
+    screen.fail("本輪已停止。可重新開始對話。");chatting=false;
+    $("turn-status").textContent="已停止本機播放／字幕；已送出的後端請求不會撤回";controls();
+  };
   $("read-example").onclick=()=>{window.speechSynthesis?.cancel();speak($("reading-prompt").textContent,enrollment.language);};
   window.speechSynthesis?.addEventListener("voiceschanged",voiceStatus);
-  window.addEventListener("pagehide",()=>{stopRecording?.();window.speechSynthesis?.cancel();clearPreview();socket?.close();});
-  draw();initialize();
+  window.addEventListener("pagehide",()=>{screen.dispose();stopRecording?.();window.speechSynthesis?.cancel();clearPreview();socket?.close();});
+  initialize();
 })();

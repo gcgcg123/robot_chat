@@ -11,7 +11,7 @@
 <section><h2>一、整合原則</h2><p>小智是 ESP 韌體與通訊參考；我們的 Python 後端、情緒分析、聲紋、使用者管理和 Dashboard 是本專案核心。整合會採用相容的事件概念，保留自己的資料模型和安全邊界，避免直接把小智 server 或預設 AI 服務當成我們的產品邏輯。</p><div class="flow">ESP 麥克風／按鍵
   → WebSocket session
   → 後端接收 audio 或文字事件
-  → ASR → 聲紋識別 → 情緒／風險分析 → DeepSeek
+  → ASR → 使用者歸屬（PC 目前手選；實機聲紋待驗證）→ 情緒／風險分析 → DeepSeek
   → TTS segment + display.state
   → ESP LCD 字幕、表情、播放</div></section>
 <section><h2>二、可直接套用或按協定實作的內容</h2><table><tr><th>內容</th><th>來源位置</th><th>整合方式</th></tr>
@@ -29,19 +29,22 @@
 <tr><td><span class="tag design">自行設計</span> 後端安全與資料隔離</td><td>admin/device session、CSRF、共享／個人／分析資料域、刪除稽核；不直接照搬小智的帳戶邏輯。</td><td><code>services/security</code>、<code>services/storage</code></td></tr>
 <tr><td><span class="tag design">自行設計</span> 語言與 TTS 策略</td><td>粵語、普通話、英語分開保存偏好和登記語言；ASR 可自動判斷，TTS 缺少音色時顯示提示。</td><td><code>services/enrollment/languages.py</code>、simulator</td></tr>
 </table></section>
-<section><h2>四、目前模擬 ESP 的改良規格</h2><p>模擬器不是一般聊天頁，而是用來預覽未來 ESP LCD 的狀態。畫面固定包含裝置外框、LCD 區域、狀態燈、表情圖像、字幕區、音量 meter 和播放中的 segment 指示。</p><div class="flow">turn.started       → listening + 清空本輪字幕
-stt.final           → transcribing + 顯示使用者字幕
-turn.processing     → thinking + 思考動畫
-tts.segment         → speaking + 逐段字幕 + 播放／進度
-tts.end             → idle + 保留最後回覆
+<section><h2>四、目前模擬 ESP 的改良規格</h2><p>模擬器不是一般聊天頁，而是用來預覽未來 ESP LCD 的狀態。畫面固定包含裝置外框、LCD 區域、狀態燈、表情圖像、字幕區、音量 meter 和播放中的 segment 指示。</p><div class="flow">PC 開始錄音         → listening + 真實 PCM 音量波形
+PC 上傳 ASR         → transcribing +「正在理解…」
+stt.final           → 顯示使用者字幕
+display.state       → thinking，保留使用者字幕
+tts.segment         → 加入播放佇列；開始播放才 speaking
+tts.end             → 只代表接收完成，不提前待機
+最後 segment 播完   → idle + 保留最後字幕 5 秒
 turn.failed         → error + 可重試提示
-heartbeat stale     → offline + 連線提示</div><p>長字幕會以 LCD 寬度估算自動換行，最多顯示固定行數；新 segment 到達時只更新必要區域，避免畫面閃爍。</p></section>
+WebSocket close     → offline + 清理播放佇列</div><p>長字幕會以 LCD 寬度估算自動換行，顯示區為三行可捲動視窗，不刪除剩餘文字；完整本輪字幕另外保留於畫面旁。語音進度依瀏覽器文字邊界事件顯示；不支援邊界事件時標示估算，無音色時標示無音訊字幕預覽。</p></section>
 <section><h2>五、第二階段才接真 ESP 的項目</h2><table><tr><th>項目</th><th>原因</th></tr>
 <tr><td><span class="tag phase2">第二階段</span> DNESP32S3 GPIO、LCD controller、I2S 麥克風／Codec</td><td>要以實際 PCB 和 2.4 吋 LCD 型號核對，不能只靠 Release 檔名猜測。</td></tr>
 <tr><td><span class="tag phase2">第二階段</span> 韌體編譯、燒錄、Wi-Fi 配置、OTA</td><td>需要 ESP-IDF、USB 驅動和實體裝置。</td></tr>
 <tr><td><span class="tag phase2">第二階段</span> 真音訊串流、播放打斷、LCD 效能</td><td>需要量測實機延遲、PSRAM、記憶體和音訊時序。</td></tr>
 <tr><td><span class="tag phase2">第二階段</span> MQTT／UDP bridge</td><td>先完成 WebSocket 端到端，再加入控制面與局域網傳輸，降低除錯範圍。</td></tr>
 </table></section>
-<section><h2>六、驗收標準</h2><ol><li>模擬器可依 WebSocket 事件顯示 listening、thinking、speaking、idle、error。</li><li>使用者語音字幕、機器人回覆字幕和表情狀態同步更新。</li><li>長句自動換行，不溢出 LCD 模擬區域。</li><li>切換使用者或語言時，不會沿用上一輪表情、字幕或聲紋登記狀態。</li><li>服務中斷或 heartbeat stale 時，模擬器明確顯示離線狀態。</li><li>真 ESP 接入前，不把未核對的 GPIO、LCD controller 或韌體 binary 當成已支援。</li></ol><div class="warn">這份報告中的「直接參考」代表沿用概念、介面順序或工具方法，不代表把小智的程式碼、服務或授權內容原封不動放入我們的產品。</div></section>
+<section><h2>六、驗收標準</h2><ol><li>模擬器可依 WebSocket 事件顯示 listening、thinking、speaking、idle、error。</li><li>使用者語音字幕、機器人回覆字幕和表情狀態同步更新。</li><li>長句自動換行，不溢出 LCD 模擬區域。</li><li>切換使用者或語言時，不會沿用上一輪表情、字幕或聲紋登記狀態。</li><li>WebSocket 連線關閉時，模擬器明確顯示離線狀態。</li><li>真 ESP 接入前，不把未核對的 GPIO、LCD controller 或韌體 binary 當成已支援。</li></ol><div class="warn">這份報告中的「直接參考」代表沿用概念、介面順序或工具方法，不代表把小智的程式碼、服務或授權內容原封不動放入我們的產品。</div></section>
 <section><h2>七、改造順序</h2><ol><li>建立 display event contract。</li><li>讓後端 WebSocket 在 turn、STT、TTS 節點發出 display state。</li><li>改造 Canvas 模擬器為實體 LCD 視窗。</li><li>加入字幕分頁、表情動畫、音量和播放進度。</li><li>補測試與文件，然後才接真 ESP 韌體。</li></ol></section>
+<section><h2>八、本次實作邊界（2026-09-14 更新）</h2><p>採用固定邏輯 320×240、CSS 等比例縮放。表情、呼吸／思考／說話動畫、字幕佇列、三行捲動、音量波形及錯誤處理由本專案自行編寫，沒有複製小智 C++ 或圖像資源。小智只提供狀態／播放生命週期的參考，現有 WebSocket 事件名稱也不是小智韌體可直接接入的協定。</p><p>PC 語音由瀏覽器 Web Speech 播放；目前後端 media_url 並非可驗收的真實語音，不使用它假裝音訊已播出。音色取決於作業系統／瀏覽器；逐字顯示不是強制對齊的 ASR 字級時間戳。RAG、可信聲紋識別、ESP 韌體與硬體音訊仍不在本次範圍內。</p><p>驗收：保留三步登記功能；測試長字幕不丟字、逐段串行播放、tts.end 不提前完成、風險優先於表情、使用者切換及斷線後舊回呼失效。</p></section>
 </body></html>
