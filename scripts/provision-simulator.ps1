@@ -41,7 +41,19 @@ with open_database(os.path.join(p, "emotional_robot.sqlite3")) as c:
     c.commit()
     print(create_session(c, d, "device", device_id=d))
 '@
-$token = (& $venvPython -c $pythonCode)
+$pythonFile = Join-Path $tokenDirectory "provision_token_tmp.py"
+[System.IO.File]::WriteAllText($pythonFile, $pythonCode, (New-Object System.Text.UTF8Encoding($false)))
+try {
+    # Running a temporary file avoids PowerShell/native quoting differences
+    # that can strip SQL string quotes when passing a multiline -c argument.
+    $previousPythonPath = $env:PYTHONPATH
+    if ($previousPythonPath) { $env:PYTHONPATH = "$projectRoot;$previousPythonPath" }
+    else { $env:PYTHONPATH = $projectRoot }
+    $token = (& $venvPython $pythonFile)
+} finally {
+    $env:PYTHONPATH = $previousPythonPath
+    Remove-Item -LiteralPath $pythonFile -Force -ErrorAction SilentlyContinue
+}
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($token -join ""))) {
     throw "Simulator token provisioning failed."
 }
