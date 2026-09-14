@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,7 +143,8 @@ def test_check_only_reports_ready_project_without_starting_processes():
         assert report["python_ready"] is True
 
 
-def test_start_health_heartbeat_and_stop_round_trip():
+@pytest.mark.parametrize("expired_local", [False, True])
+def test_start_health_heartbeat_and_stop_round_trip(expired_local):
     port = free_port()
     with tempfile.TemporaryDirectory() as temp_dir:
         runtime_dir = Path(temp_dir) / "runtime"
@@ -153,7 +155,13 @@ def test_start_health_heartbeat_and_stop_round_trip():
         from services.security.auth import create_session
         with open_database(data_dir / "emotional_robot.sqlite3") as conn:
             migrate(conn)
-            device_token = create_session(conn, "sim-device", "device", device_id="sim-device")
+            device_token = create_session(conn, "sim-device", "device", device_id="sim-device", ttl_seconds=-1 if expired_local else 3600)
+        token_args = ["-DeviceToken", device_token]
+        if expired_local:
+            token_path = data_dir / "secrets" / "simulator.token"
+            token_path.parent.mkdir()
+            token_path.write_text(device_token)
+            token_args = []
         environment = os.environ.copy()
         environment["DEEPSEEK_API_KEY"] = "test-key-not-real"
         environment["IOT_ADMIN_PASSWORD"] = "test-password"
@@ -169,13 +177,12 @@ def test_start_health_heartbeat_and_stop_round_trip():
             str(log_dir),
             "-DataDir",
             str(data_dir),
-            "-DeviceToken",
-            device_token,
+            *token_args,
             env=environment,
             capture=False,
         )
         try:
-            assert started.returncode == 0, started.stderr + started.stdout
+            assert started.returncode == 0, (log_dir / "heartbeat-error.log").read_text(errors="replace")
             deadline = time.time() + 10
             health = None
             while time.time() < deadline:

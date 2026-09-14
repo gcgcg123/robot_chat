@@ -159,33 +159,19 @@ try {
 
 $heartbeatEnabled = [bool]$config.heartbeat_enabled -and -not $NoHeartbeat
 if ($heartbeatEnabled) {
+    # Module invocation and explicit argument quoting also work from paths with spaces.
+    $heartbeatArguments = @("-m", "simulator.heartbeat", "--url", "http://${hostAddress}:${actualPort}/api/device/heartbeat", "--device-id", [string]$config.simulator_device_id, "--interval", ([int]$config.heartbeat_interval_seconds).ToString())
     if ([string]::IsNullOrWhiteSpace($DeviceToken)) {
-        $tokenCandidates = @(
-            (Join-Path $DataDir "secrets\simulator.token"),
-            (Join-Path $DataDir ("secrets\simulator-{0}.token" -f [string]$config.simulator_device_id))
-        )
-        foreach ($candidate in $tokenCandidates) {
-            if (Test-Path -LiteralPath $candidate) {
-                $DeviceToken = (Get-Content -Raw -LiteralPath $candidate).Trim()
-                break
-            }
-        }
+        # The local helper renews only this device's session, including during long runs.
+        $heartbeatArguments += @("--local-data-dir", $DataDir)
+    } else {
+        # An explicitly supplied token remains caller-managed; never auto-replace it.
+        $heartbeatArguments += "--token=$DeviceToken"
     }
-    if ([string]::IsNullOrWhiteSpace($DeviceToken)) {
-        if ($startedServiceHere) { Stop-OwnedProcess -StateFile $serviceStateFile -ExpectedRole "service" | Out-Null }
-        throw "Simulator heartbeat is enabled but no device token is configured. Run scripts\provision-simulator.ps1 -DataDir '$DataDir' -DeviceId '$([string]$config.simulator_device_id)' or pass -DeviceToken."
-    }
-    $heartbeatScript = Join-Path $projectRoot "simulator\heartbeat.py"
-    # Start-Process quotes each ArgumentList item as needed.  Supplying a
-    # pre-quoted path here causes PowerShell 5.1 to retain literal quotes and
-    # makes argparse treat the script invocation as malformed.
-    $heartbeatArguments = @($heartbeatScript, "--url", "http://${hostAddress}:${actualPort}/api/device/heartbeat", "--device-id", [string]$config.simulator_device_id, "--interval", ([int]$config.heartbeat_interval_seconds).ToString())
-    # Use the equals form so a URL-safe token beginning with '-' cannot be
-    # mistaken for another argparse option.
-    if ($DeviceToken) { $heartbeatArguments += "--token=$DeviceToken" }
-    $heartbeatProcess = Start-Process -FilePath $venvPython -ArgumentList $heartbeatArguments -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $LogDir "heartbeat.log") -RedirectStandardError (Join-Path $LogDir "heartbeat-error.log") -PassThru
+    $heartbeatCommand = ($heartbeatArguments | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join " "
+    $heartbeatProcess = Start-Process -FilePath $venvPython -ArgumentList $heartbeatCommand -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $LogDir "heartbeat.log") -RedirectStandardError (Join-Path $LogDir "heartbeat-error.log") -PassThru
     try {
-        Write-OwnedProcessState -StateFile $heartbeatStateFile -Process $heartbeatProcess -Role "heartbeat" -CommandContains "heartbeat.py" -RunId $runId
+        Write-OwnedProcessState -StateFile $heartbeatStateFile -Process $heartbeatProcess -Role "heartbeat" -CommandContains "simulator.heartbeat" -RunId $runId
     } catch {
         Stop-ProcessTree -TargetProcessId $heartbeatProcess.Id
         if ($startedServiceHere) { Stop-OwnedProcess -StateFile $serviceStateFile -ExpectedRole "service" | Out-Null }
