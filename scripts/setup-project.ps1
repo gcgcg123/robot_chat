@@ -85,6 +85,19 @@ if (-not $SkipAdmin) {
         $adminSecure = ConvertTo-SecureString $adminPassword.Trim() -AsPlainText -Force
     }
     if ($adminSecure) {
+        # Read-Host -AsSecureString returns an empty SecureString when the
+        # user presses Enter without entering a password.  PowerShell's
+        # ConvertFrom-SecureString rejects that value, so validate it first
+        # and provide a clear retry message.
+        $adminBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($adminSecure)
+        try {
+            $adminPlainLength = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($adminBstr).Length
+        } finally {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($adminBstr)
+        }
+        if ($adminPlainLength -lt 1) {
+            throw "Dashboard administrator password cannot be empty. Run setup again and enter a password."
+        }
         $adminDirectory = Split-Path -Parent $AdminSecretFile
         New-Item -ItemType Directory -Force -Path $adminDirectory | Out-Null
         $encryptedAdmin = ConvertFrom-SecureString $adminSecure
