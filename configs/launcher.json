@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "open_browser": true,
+  "heartbeat_enabled": true,
+  "heartbeat_interval_seconds": 10,
+  "simulator_device_id": "sim-device",
+  "deepseek_base_url": "https://api.deepseek.com",
+  "deepseek_model": "deepseek-chat"
+}

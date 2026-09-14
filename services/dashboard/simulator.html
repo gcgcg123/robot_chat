@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PC 語音模擬器 · 心語</title><link rel="stylesheet" href="/dashboard-assets/simulator.css"></head>
+<body data-authenticated="false"><main class="sim-shell"><header><a href="/dashboard" class="back">← Dashboard</a><div><p class="eyebrow">PC device adapter · half duplex</p><h1>語音與聲紋測試</h1></div><span id="connection" class="state pending">準備中</span></header>
+<section class="sim-grid"><article class="panel setup"><h2>1 · 選擇使用者</h2><p class="muted">註冊新使用者後，按下開始登記並朗讀三段短句。</p><label>使用者<select id="user-select"><option value="">載入中…</option></select></label><button id="new-user" class="secondary">註冊新使用者</button><form id="profile-form" hidden><label>姓名<input name="display_name" required maxlength="128"></label><div class="two"><label>性別<select name="gender"><option>不透露</option><option>女性</option><option>男性</option><option>其他</option></select></label><label>年齡<input name="age_at_registration" type="number" min="1" max="120"></label></div><button class="primary">建立並開始聲紋登記</button></form></article>
+<article class="panel enrollment"><h2>2 · 聲紋登記</h2><div class="progress"><span id="sample-count">0 / 3</span><div><i id="progress-bar"></i></div></div><p id="enrollment-status" class="muted">先選擇使用者，再允許瀏覽器使用麥克風。</p><button id="enroll-start" class="primary" disabled>開始登記</button><button id="enroll-record" class="record" disabled>● 按住朗讀並錄音</button><audio id="sample-preview" controls hidden></audio></article>
+<article class="panel conversation"><h2>3 · 模擬對話</h2><canvas id="display" width="320" height="240" aria-label="模擬 ESP 螢幕"></canvas><div class="conversation-controls"><button id="conversation-record" class="primary" disabled>● 開始語音對話</button><span id="turn-status" class="muted">尚未建立 session</span></div><div id="captions" class="captions" aria-live="polite"></div></article></section>
+<div id="toast" role="status"></div></main><script src="/dashboard-assets/simulator.js"></script><script>
+(async function () {
+  try {
+    const response = await fetch('/api/auth/session', { cache: 'no-store' });
+    if (!response.ok) { window.location.href = '/dashboard'; return; }
+    const data = await response.json();
+    window.__iotCsrf = data.csrf_token;
+    document.body.dataset.authenticated = 'true';
+    window.dispatchEvent(new CustomEvent('iot:authenticated'));
+  } catch (_) { window.location.href = '/dashboard'; }
+})();
+</script></body></html>

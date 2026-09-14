@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q services simulator scripts
+      - name: Run project tests
+        run: python -m pytest tests -q
+      - name: Check JavaScript syntax
+        shell: pwsh
+        run: node --check services/dashboard/simulator.js
+      - name: Check whitespace
+        run: git diff --check

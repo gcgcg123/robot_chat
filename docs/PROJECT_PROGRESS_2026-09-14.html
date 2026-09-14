@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>情感陪伴機器人｜專案進度報告</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #5d6a75;
+      --line: #d9e0e5;
+      --paper: #f5f7f8;
+      --panel: #ffffff;
+      --navy: #19324a;
+      --teal: #087f8c;
+      --green: #18794e;
+      --amber: #9a6500;
+      --red: #a33a35;
+      --violet: #5c4b93;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.65 "Segoe UI", "Microsoft JhengHei", sans-serif;
+    }
+    a { color: var(--teal); }
+    .topbar { background: var(--navy); color: #fff; padding: 34px 22px 30px; }
+    .topbar-inner, main { max-width: 1180px; margin: 0 auto; }
+    .eyebrow { margin: 0 0 8px; color: #b9dce0; font-size: 12px; letter-spacing: .08em; }
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 44px); line-height: 1.2; }
+    .subtitle { max-width: 760px; margin: 12px 0 0; color: #dce7ed; font-size: 16px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 20px; color: #c4d3dc; font-size: 13px; }
+    main { padding: 26px 22px 56px; }
+    section { margin: 0 0 34px; }
+    h2 { margin: 0 0 12px; font-size: 24px; line-height: 1.3; }
+    h3 { margin: 0 0 8px; font-size: 18px; line-height: 1.35; }
+    h4 { margin: 14px 0 5px; font-size: 15px; }
+    p { margin: 7px 0; }
+    .lead { color: var(--muted); max-width: 900px; }
+    .notice { border-left: 4px solid var(--amber); background: #fff8e7; padding: 13px 16px; margin: 15px 0; }
+    .notice strong { color: #704a00; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 22px 0 28px; }
+    .stat { background: var(--panel); border: 1px solid var(--line); padding: 16px; min-height: 124px; }
+    .stat .value { display: block; margin-top: 4px; color: var(--navy); font-size: 31px; font-weight: 700; line-height: 1.1; }
+    .stat .label { color: var(--muted); font-size: 13px; }
+    .stat .detail { color: var(--muted); font-size: 12px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted); font-size: 13px; }
+    .status { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+    .status.done { color: #0d5b39; background: #dff3e8; }
+    .status.review { color: #6e4a00; background: #fff0bf; }
+    .status.todo { color: #3f4e59; background: #e8edf0; }
+    .status.wait { color: #544484; background: #e9e3f8; }
+    .status.base { color: #075c65; background: #d9f0f1; }
+    .flow { display: grid; grid-template-columns: repeat(9, minmax(90px, 1fr)); align-items: center; gap: 7px; margin: 16px 0 12px; }
+    .flow-box { min-height: 72px; display: grid; place-items: center; text-align: center; padding: 9px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+    .flow-box.future { border-style: dashed; color: var(--violet); background: #fbfaff; }
+    .flow-arrow { text-align: center; color: var(--teal); font-size: 22px; }
+    .caption { color: var(--muted); font-size: 12px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); padding: 18px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .work-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .work-item { background: var(--panel); border: 1px solid var(--line); padding: 17px; }
+    .work-item.featured { grid-column: 1 / -1; border-left: 4px solid var(--teal); }
+    .work-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+    .work-id { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+    ul { margin: 7px 0 0; padding-left: 20px; }
+    li { margin: 3px 0; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; min-width: 720px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #edf2f4; color: #33424d; font-size: 13px; }
+    tr:last-child td { border-bottom: 0; }
+    code, pre { font-family: Consolas, "Cascadia Code", monospace; }
+    code { background: #eef2f4; padding: 1px 4px; font-size: .92em; }
+    pre { overflow-x: auto; background: #17212b; color: #eaf2f5; padding: 14px; margin: 10px 0 0; font-size: 12px; line-height: 1.55; }
+    .checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 22px; }
+    .checklist div { padding: 7px 0 7px 24px; position: relative; border-bottom: 1px dotted var(--line); }
+    .checklist div::before { content: ""; position: absolute; left: 2px; top: 9px; width: 13px; height: 13px; border: 1px solid #9aa7ae; }
+    .checklist .done::before { content: "✓"; border: 0; color: var(--green); font-weight: 700; top: 5px; }
+    .risk { border-left: 4px solid var(--red); background: #fff1ef; padding: 13px 16px; margin: 8px 0; }
+    .risk strong { color: #7d2925; }
+    footer { border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 860px) {
+      .stats, .grid-2, .work-grid { grid-template-columns: 1fr; }
+      .work-item.featured { grid-column: auto; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-arrow { transform: rotate(90deg); height: 20px; }
+      .checklist { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <p class="eyebrow">PROJECT PROGRESS · 2026-09-14</p>
+      <h1>情感陪伴機器人</h1>
+      <p class="subtitle">第一階段以 PC 麥克風模擬 ESP，先完成可安全驗收的後端、模型與 Dashboard；第二階段待 DNESP32S3＋2.4 吋 LCD 到貨後才進行韌體與真機聯調。</p>
+      <div class="meta">
+        <span>專案目錄：<code>C:\Users\gcgcg\OneDrive\Desktop\IoT_group5\project_place</code></span>
+        <span>工作議題：<code>LOCAL-3</code></span>
+        <span>報告狀態：截至 2026-09-14 的檔案與測試核對</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="notice"><strong>先看結論：</strong>PC 端第一階段主流程已可啟動與測試：管理員登入、使用者登記、聲紋樣本流程、WebSocket 對話、風險分析、MQTT/UDP loopback 與 Dashboard API 均已接通。仍需真人麥克風／喇叭驗收、Windows TTS 品質校準與 ESP 硬體整合；RAG 客製知識刻意保留給後續自行設計。</div>
+      <div class="stats">
+        <div class="stat"><span class="label">PC P1 工作包已接通</span><span class="value">10 / 10</span><span class="detail">程式契約與主要路由完成，硬體與真人校準仍待驗收</span></div>
+        <div class="stat"><span class="label">第一階段 PC 可驗收</span><span class="value">10 / 10</span><span class="detail">RAG 客製資料停用；真人品質與硬體是後續 gate</span></div>
+        <div class="stat"><span class="label">本輪專案測試</span><span class="value">71 passed</span><span class="detail">6 個依賴棄用警告，非失敗</span></div>
+        <div class="stat"><span class="label">第二階段</span><span class="value">待硬體</span><span class="detail">ESP 尚未接入或驗證</span></div>
+      </div>
+      <div class="legend">
+        <span><span class="status done">已實作</span> 程式已寫入</span>
+        <span><span class="status review">複核中</span> 測試通過但仍有接受門檻</span>
+        <span><span class="status todo">未開始</span> 只有計劃與規格</span>
+        <span><span class="status wait">等待硬體</span> 第二階段停點</span>
+        <span><span class="status base">既有基線</span> 原本已存在，不等於新工作包完成</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>RAG 責任邊界：小智概念與本專案設計</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>分類</th><th>保留自小智概念</th><th>本專案情感機器人自訂設計</th></tr></thead>
+          <tbody>
+            <tr><td><strong>LLM 工具呼叫</strong></td><td>保留「由 LLM 決定是否呼叫檢索工具，再把結果放回上下文」的編排方向。</td><td>P1 先以 <code>process_text</code> 明確編排；未來工具 schema、權限與取消由本專案控制，不讓文件內容觸發管理操作。</td></tr>
+            <tr><td><strong>RAGFlow retrieval</strong></td><td>參考小智 <code>search_from_ragflow.py</code> 的 <code>POST /api/v1/retrieval</code>、dataset ids、最多五段 chunks。</td><td><code>RAGFlowProvider</code> 只作 optional adapter；endpoint/token 必須由環境配置，P1 預設不連外，RAGFlow 需另行部署。</td></tr>
+            <tr><td><strong>三層資料隔離</strong></td><td>小智的 RAGFlow 與 memory provider 概念可作為外部知識／記憶的接入參考。</td><td>我們另外定義 <code>shared</code> 共享知識、<code>user:&lt;id&gt;</code> 個人記憶、<code>analysis</code> 情緒／風險資料三層；owner、consent、approved 過濾先於相似度。</td></tr>
+            <tr><td><strong>訓練與資料治理</strong></td><td>不直接複製小智的資料或模型權重。</td><td>先以核准 txt/md 與虛構記憶建立 fixture；日後才加入 CPU embedding（如 BGE-small），記錄 revision、維度、hash、來源與刪除紀錄；聲紋與情緒模型另行校準。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>本輪新增：RAG 與 UDP 設計</h2>
+      <div class="grid-2">
+        <div class="panel">
+          <h3>RAG 分層</h3>
+          <ul>
+            <li><strong>shared：</strong>管理員核准的 UTF-8 txt/md；可供所有已授權對話使用。</li>
+            <li><strong>user:&lt;id&gt;：</strong>個人記憶，只有聲紋 decision=accepted 且 memory consent 有效時可讀。</li>
+            <li><strong>analysis：</strong>情緒／風險事件，供 Dashboard 查詢，不直接當作提示詞事實。</li>
+            <li>檢索先做 owner／approved／active 篩選，再取 top-k；context 會標記為「不可信參考」，不能覆寫 system 規則或觸發管理操作。</li>
+            <li>小智參考的 <code>search_from_ragflow.py</code> 已轉成 optional <code>RAGFlowProvider</code>（<code>POST /api/v1/retrieval</code>、最多 5 chunks）；RAGFlow 本身仍需另行部署。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>UDP／MQTT／WebSocket 邊界</h3>
+          <ul>
+            <li><strong>MQTT：</strong>裝置註冊、heartbeat、控制與能力協商，不承載正式音訊。</li>
+            <li><strong>WebSocket：</strong>第一階段 PC 模擬器的互動事件、字幕、TTS segment、播放 ACK。</li>
+            <li><strong>UDP：</strong>第二階段低延遲 PCM／Opus 音訊候選；P1 只完成 <code>IOT1</code> frame、session 驗證、sequence 去重與 wrong-session 拒絕。</li>
+            <li>UDP loopback 通過只證明 adapter／封包規則，不能代表 DNESP32S3、Wi-Fi、codec 或防火牆已通過。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>1. 專案目標與目前資料流</h2>
+      <p class="lead">目標是讓 ESP 作為語音與螢幕終端：辨識目前說話者、把語音送到 laptop 做 ASR、情緒與風險分析、個人化 RAG、DeepSeek 回覆及 TTS，再把聲音、句級字幕和輕量角色狀態送回 ESP。Dashboard 只負責管理與檢視，不放瀏覽器文字聊天框。</p>
+      <div class="flow" aria-label="目標資料流">
+        <div class="flow-box future">PC mic／ESP<br>語音輸入</div><div class="flow-arrow">→</div>
+        <div class="flow-box future">聲紋＋ASR<br>身份／文字</div><div class="flow-arrow">→</div>
+        <div class="flow-box future">情緒／風險<br>RAG＋DeepSeek</div><div class="flow-arrow">→</div>
+        <div class="flow-box future">TTS<br>句級事件</div><div class="flow-arrow">→</div>
+        <div class="flow-box future">ESP 喇叭／LCD<br>字幕＋表情</div>
+      </div>
+      <p class="caption">目前已可用的是受保護 API、常駐 ASR、RAG／記憶 scope 邊界、TTS 分句／媒體 store、聲紋註冊基線、PC simulator session、風險合併與 UDP loopback frame；瀏覽器 PCM/WAV 錄音已接通，真人播放品質與 ESP 真機閉環仍待人工驗收。</p>
+      <div class="grid-2" style="margin-top:14px">
+        <div class="panel">
+          <h3>現有基線（可沿用）</h3>
+          <ul>
+            <li>FastAPI service、SQLite schema、DeepSeek OpenAI-compatible adapter（無 key 時 fallback）。</li>
+            <li>Dashboard 可查看情緒分布、最近對話、服務狀態與 simulator 裝置 heartbeat。</li>
+            <li><code>/api/chat</code>、<code>/api/transcribe</code>、<code>/api/conversations</code> 等路由已存在；P1-01 已補上授權邊界。</li>
+            <li>一鍵啟動、開發模式、停止腳本和 simulator heartbeat 已在專案目錄。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>目前不能宣稱的能力</h3>
+          <ul>
+            <li>PC 聲紋是可替換的 baseline embedding；3D-Speaker／ECAPA 與真人 unknown／ambiguous 門檻仍要校準。</li>
+            <li>常駐 ASR 與 PCM/WAV 錄音已接通；中文 TTS 聽感、喇叭播放 ACK 仍待真人驗收。</li>
+            <li>RAG scope 與 optional RAGFlow adapter 已寫入，但客製知識、embedding 與外部服務刻意未啟用。</li>
+            <li>正式資料仍須由操作者依備份／回復程序切換到 <code>%LOCALAPPDATA%\IoTGroup5</code>。</li>
+          </ul>
+        </div>
+      </div>
+      <div class="notice" style="margin-top:14px"><strong>一鍵啟動的實際邊界：</strong>可用於 backend health、launcher start/stop 與隔離資料 smoke test；目前不等於 Dashboard 已登入或 PC 語音驗收。必須先配置 <code>IOT_ADMIN_PASSWORD</code>，並為 simulator 提供綁定的 device token；否則受保護 API 會回傳 401／503，heartbeat 也會失敗。</div>
+    </section>
+
+    <section>
+      <h2>2. 第一階段工作包進度</h2>
+      <div class="work-grid">
+        <article class="work-item featured">
+          <div class="work-meta"><span class="work-id">P1-01</span><span class="status review">已實作／待二次複核</span></div>
+          <h3>安全基礎與測試隔離</h3>
+          <p><strong>目的：</strong>先保護現有個資、錄音與裝置資料，確保後續使用者、聲紋和 RAG 功能不會建立在公開路由或會碰到正式資料的測試之上。</p>
+          <h4>已寫入的功能</h4>
+          <ul>
+            <li><code>RuntimeSettings</code>、<code>create_app(...)</code> 與 lifespan-only migration；測試使用臨時資料庫與資料目錄。</li>
+            <li>SQLite backup／migration 工具；預設執行期路徑改為 <code>%LOCALAPPDATA%\IoTGroup5</code>，並保留舊 <code>DATABASE_PATH</code> 相容性。</li>
+            <li>雜湊後的 admin/device session、HttpOnly/SameSite cookie、CSRF 與 Origin 檢查、actor 綁定及 session TTL cookie。</li>
+            <li>同意紀錄與 append-only audit；使用者、對話、情緒、裝置和 heartbeat 路由加入管理員／裝置授權。</li>
+            <li>測試模式禁止外部 DeepSeek 網路呼叫；未知 schema fail-closed；nullable conversation migration 保留 foreign key。</li>
+            <li>音訊上傳限制為 10 MB／60 秒；心跳支援綁定 device token；登入失敗有程序內限速。</li>
+          </ul>
+          <h4>新鮮驗證證據</h4>
+          <pre>.\.venv\Scripts\python.exe -m pytest -q -o norecursedirs=upstream
+72 passed, 6 warnings
+
+scripts\acceptance-check.ps1 -Password &lt;local password&gt;
+health=true, dashboard=true, login=true, users=true, simulator=true</pre>
+          <p><strong>仍需操作者：</strong>首次設定管理員密碼、provision simulator token，並依維護流程做正式資料庫備份／回復驗證。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-02</span><span class="status review">核心完成／待真人驗收</span></div>
+          <h3>使用者管理與個人頁</h3>
+          <p><strong>目的：</strong>在 Dashboard 列出已註冊者，點擊後查看姓名、性別、年齡、最近心情、對話分析、裝置與風險。</p>
+          <p><strong>計劃：</strong>CRUD、搜尋／分頁、停用／刪除、空狀態、同意記錄與個人頁路由。依賴 P1-01 的資料與授權邊界。</p>
+          <p><strong>已完成：</strong>Profile schema、CRUD、搜尋分頁、停用／刪除 API、個人 summary API、使用者列表與 <code>/dashboard/user/{id}</code> 個人頁。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-03</span><span class="status done">已實作／CPU smoke 通過</span></div>
+          <h3>ASR 與模型生命週期</h3>
+          <p><strong>目的：</strong>把 Whisper 從每次請求載入改為常駐、有界佇列，具備 CUDA → CPU int8 降級、音訊正規化、實際 readiness 與延遲指標。</p>
+          <p><strong>已完成：</strong>常駐 <code>AsrService</code>、mono 16 kHz WAV 正規化、品質檢查、有界 worker、CUDA／OOM → CPU int8 降級、model manifest 與狀態 API；本地 Turbo CT2 模型已完成 CPU 轉錄 smoke。<strong>待驗收：</strong>RTX 2060 CUDA 暖機／延遲與多語音質。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-04</span><span class="status review">合約完成／待真人驗收</span></div>
+          <h3>Server TTS 與音訊媒體</h3>
+          <p><strong>目的：</strong>回覆在 laptop 合成為中文音訊，與同一正文產生字幕，並以 session／turn／segment 保護媒體存取。</p>
+          <p><strong>已完成：</strong>句子切分、Windows provider 介面、短期 media store、session ownership／TTL／revoke、WebSocket segment metadata。<strong>待驗收：</strong>中文 voice 真實合成、音量與播放品質；silence provider 僅供自動化測試。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-05</span><span class="status review">PC 基線完成／待 FA-FR 校準</span></div>
+          <h3>聲紋與註冊服務</h3>
+          <p><strong>目的：</strong>讓註冊者以 3–5 段自願錄音建立加密模板，另用獨立驗證句校準門檻，辨識失敗時回傳 unknown 而不串用他人記憶。</p>
+          <p><strong>已完成：</strong>unknown／ambiguous／accepted 分類、3 段樣本 enrollment API、PC baseline embedding、加密模板 envelope、模板替換與 identify endpoint。<strong>待驗收：</strong>3D-Speaker／ECAPA 真 embedding 與真人 FA／FR 校準。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-06</span><span class="status done">PC UI 已實作／待真人驗收</span></div>
+          <h3>PC 麥克風註冊精靈</h3>
+          <p><strong>目的：</strong>在沒有 ESP 時提供明確的瀏覽器 mic 授權、語音個資確認、聲紋樣本、播放回覆與半雙工對話測試。</p>
+          <p><strong>已完成：</strong><code>/simulator</code> 登入保護與 session bootstrap、瀏覽器 Web Audio PCM/WAV 錄音、3 段 enrollment stepper、320×240 canvas、WebSocket 事件與字幕。<strong>待驗收：</strong>實際瀏覽器權限、喇叭播放與裝置音量情境。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-07</span><span class="status done">DeepSeek 邊界完成／RAG 客製停用</span></div>
+          <h3>DeepSeek、RAG 與個人記憶</h3>
+          <p><strong>目的：</strong>以 DeepSeek 官方 API 產生回覆，將共享知識與個人記憶分離，只有身份與同意有效時才可檢索個人內容。</p>
+          <p><strong>已完成：</strong>DeepSeek adapter（key 僅環境變數）、scope／consent 過濾、prompt 不可信標記、optional RAGFlow adapter、記憶 CRUD 與刪除。<strong>刻意保留：</strong>客製知識庫、embedding、資料來源與 RAGFlow server 不在本輪啟用，待你自行設計治理規則；本輪未呼叫付費 API。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-08</span><span class="status review">PC 管線完成／待裝置驗收</span></div>
+          <h3>完整語音、字幕與角色管線</h3>
+          <p><strong>目的：</strong>串起 mic → 聲紋／ASR → 情緒／RAG／LLM → TTS → PC 播放與虛擬 320×240 畫面，支援句級字幕、停止及舊輪次失效。</p>
+          <p><strong>已完成：</strong>process_text orchestration、TurnRegistry 取消／排他、句級 TTS segments、DeviceEvent contract、WebSocket 事件、PC adapter 與 320×240 角色畫面。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-09</span><span class="status review">API 完成／待趨勢 UI</span></div>
+          <h3>個人分析與風險後台</h3>
+          <p><strong>目的：</strong>顯示最近心情、7／30 日趨勢、對話摘要與時長、裝置狀態、風險提示及人工處理狀態。</p>
+          <p><strong>已完成：</strong>本地風險規則、local／LLM merge、7／30 日 analytics API、risk event review API、user summary 與個人頁風險區塊。<strong>待驗收：</strong>圖表視覺化與香港時區邊界。</p>
+        </article>
+
+        <article class="work-item">
+          <div class="work-meta"><span class="work-id">P1-10</span><span class="status review">PC loopback 完成／ESP待驗收</span></div>
+          <h3>Gateway、啟動器與總驗收</h3>
+          <p><strong>目的：</strong>固定 PC／ESP 能力契約，做 MQTT＋UDP loopback 預驗證，並讓新增 runner 仍可由一鍵啟動／停止管理。</p>
+          <p><strong>已完成：</strong>capability validation、IOT1 UDP loopback session／sequence 去重、MQTT control payload、DeviceEvent v1、PC protocol peer、啟動器 ownership／rollback、acceptance-check。<strong>待驗收：</strong>實際 broker、WebSocket／UDP peer 與 ESP 真機；loopback 不算硬體通過。</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 第二階段：ESP 到貨後才開始</h2>
+      <p class="lead">硬體為 DNESP32S3 開發板＋2.4 吋 LCD。第二階段的停點是刻意保留的：在未確認 PCB revision、GPIO、codec、mic、speaker、USB 埠前，不會刷機或假定上游設定可直接使用。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>工作包</th><th>目的與交付</th><th>目前狀態</th><th>進場條件</th></tr></thead>
+          <tbody>
+            <tr><td><strong>P2-01</strong> 盤點與回復</td><td>記錄型號／revision、Flash／PSRAM、LCD、codec、I2S、COM；保留原韌體與 hash。</td><td><span class="status wait">等待硬體</span></td><td>實物、原理圖、USB 連接與使用者在場確認。</td></tr>
+            <tr><td><strong>P2-02</strong> 板級 bring-up</td><td>先測 hello、LCD 色條／繁中字型、mic、speaker、按鍵；必要時關閉相機初始化。</td><td><span class="status wait">等待 P2-01</span></td><td>工具鏈、回復映像及實際 pinout 已核對。</td></tr>
+            <tr><td><strong>P2-03</strong> MQTT＋UDP</td><td>MQTT 控制、UDP 音訊、裝置憑證、序號／重連／丟包與能力協商。</td><td><span class="status wait">等待 P2-02</span></td><td>協議 fixtures 通過，LAN／broker 範圍獲確認。</td></tr>
+            <tr><td><strong>P2-04</strong> 真實語音與畫面</td><td>ESP 註冊 ready、採音、播放 TTS、320×240 字幕／角色、播放 ACK、停止與舊資料丟棄。</td><td><span class="status wait">等待 P2-03</span></td><td>第一階段 PC pipeline 已接受。</td></tr>
+            <tr><td><strong>P2-05</strong> 校準與展示</td><td>實板聲紋補錄、噪音／距離／長時間測試、斷線重連、回復指令與展示腳本。</td><td><span class="status wait">等待 P2-04</span></td><td>至少兩位自願參與者與完整測試矩陣。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <h3>已核對的上游參考，不能當成實物證據</h3>
+        <p>小智參考 commit：<code>236deb266a88ade000cc85e20c0ccacc765e0ce3</code>；相符路徑：<code>main/boards/alientek/atk-dnesp32s3/</code>。該參考使用 ST7789 320×240、ES8388，硬體 I2S 輸入／輸出 24 kHz；後端 ASR 仍會正規化為 16 kHz。參考程式有相機初始化，不能在未知硬體上盲目套用。</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. 模型、套件與本機資源</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>資源</th><th>目前證據</th><th>代表的意義</th><th>尚待驗收</th></tr></thead>
+          <tbody>
+            <tr><td>ASR 模型</td><td><code>models/asr/whisper-large-v3-turbo-ct2</code>，檔案約 1.62 GB；來源為 faster-whisper CT2 轉換版本。</td><td>不需要重新下載 Whisper；可供 faster-whisper adapter 使用，CPU int8 轉錄 smoke 已通過。</td><td>RTX 2060 CUDA 暖機／延遲、長語音與多語音質。</td></tr>
+            <tr><td>Python 套件</td><td>FastAPI 0.141.1、Starlette 1.6.0、httpx 0.28.1、faster-whisper 1.2.1、ctranslate2 4.8.2、av 18.1.0、numpy 2.5.3、onnxruntime 1.30.0。</td><td>現有服務與 ASR 基線可執行。</td><td><code>torch</code>、<code>torchaudio</code>、<code>speechbrain</code>、<code>sentence-transformers</code> 均尚未安裝；聲紋／embedding provider 尚未形成。</td></tr>
+            <tr><td>GPU</td><td>NVIDIA GeForce RTX 2060，6144 MiB，driver 581.15；本次自動選擇 CUDA 失敗後已降級 CPU int8。</td><td>服務在缺少 CUDA runtime 時仍可運作。</td><td>CUDA 12＋cuDNN 9 安裝後的暖機與延遲比較。</td></tr>
+            <tr><td>Windows TTS</td><td>已找到 Hanhan、Yating、Zhiwei（zh-TW）與 Zira（en-US）語音。</td><td>有本機 TTS 候選，不必預設使用線上服務。</td><td>合成輸出、中文聽感、播放、字幕同步尚未接受。</td></tr>
+            <tr><td>DeepSeek</td><td>設定檔使用 <code>https://api.deepseek.com</code> 與可配置 model，預設 <code>deepseek-chat</code>；本輪沒有注入或顯示 API key。</td><td>可在安全注入密鑰後接官方 API。</td><td>正式請求、超時／重試、schema、費用與網路可用性測試。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="caption">安全提醒：曾貼在聊天、命令檔或其他位置的 key 應視為已暴露並撤銷／輪換；報告不重複任何密鑰。測試模式已驗證不應呼叫外部 provider。</p>
+    </section>
+
+    <section>
+      <h2>5. 安全、資料與部署現況</h2>
+      <div class="grid-2">
+        <div class="panel">
+          <h3>已完成的防護基礎</h3>
+          <ul>
+            <li>測試的資料庫、資料目錄與 provider 隔離；不把正式 DB 當測試 fixture。</li>
+            <li>管理員與裝置路由授權、CSRF／Origin、雜湊 session、HttpOnly cookie。</li>
+            <li>資料庫 migration 對未來 schema fail-closed，並保留 conversation foreign key。</li>
+            <li>音訊大小／時長界線、heartbeat 裝置綁定、同意與 audit 表。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>仍需操作者與後續工作</h3>
+          <ul>
+            <li>安全基礎已通過本專案測試；正式上線前仍需依維護流程做第二次獨立複核。</li>
+            <li>用安全方式配置 <code>IOT_ADMIN_PASSWORD</code>、actor 與 device token，不寫入 HTML、<code>.env</code> 或 Git。</li>
+            <li>對現有 <code>data/emotional_robot.sqlite3</code> 做備份、完整性與回復演練，確認後才切到 <code>%LOCALAPPDATA%\IoTGroup5</code>。</li>
+            <li>production migration 不會由本報告自動執行；需在維護時段由操作者確認。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>6. 目前風險與限制</h2>
+      <div class="risk"><strong>身份風險：</strong>目前只有聲紋判定契約與 placeholder provider，尚無 3D-Speaker／ECAPA 真人校準；不能把文字 <code>user_id</code> 當作聲紋辨識。</div>
+      <div class="risk"><strong>音訊風險：</strong>句切分、media ownership 與播放狀態核心已在，但尚無中文 TTS 聽感、瀏覽器播放 ACK 或 ESP 音訊證據。</div>
+      <div class="risk"><strong>資料切換風險：</strong>AppData/Local 預設與 migration 程式已準備，但正式資料尚未切換；切換前必須完成 backup／recovery。</div>
+      <div class="risk"><strong>整合風險：</strong>MQTT、UDP、OTA、Wi-Fi、ESP LCD／codec 與真機 pinout 都未驗證；simulator heartbeat 只表示軟體模擬器上報。</div>
+      <div class="risk"><strong>測試範圍：</strong>本輪專案測試為 71 passed、6 warnings，另完成 compileall、ASR CPU smoke 與啟動器黑箱驗收；上游內嵌測試未納入，不能宣稱全 repository 測試通過。真人 TTS／聲紋校準、DeepSeek 付費請求與 ESP 硬體仍是後續 gate。</div>
+    </section>
+
+    <section>
+      <h2>7. 下一步順序</h2>
+      <div class="checklist">
+        <div class="done">已完成本輪證據核對：重新執行專案測試並保存結果。</div>
+        <div>依維護窗口完成正式 DB backup／recovery，並在新 key 注入後做可選 DeepSeek smoke。</div>
+        <div>安全配置管理員密碼、actor、device token；不把密鑰放入檔案。</div>
+        <div>在維護時段做正式 DB backup、recovery、migration，再核對資料筆數與時間。</div>
+        <div class="done">已完成 Dashboard 使用者詳細頁、註冊精靈 UI 與 voiceprint template 串接。</div>
+        <div>安裝／核對 3D-Speaker 或 ECAPA、Windows 中文 TTS，使用虛構與自願錄音做人工校準。</div>
+        <div class="done">已完成 WebSocket PC audio pipeline 與 MQTT／UDP loopback contract；獨立 broker 與真機故障注入留待第二階段。</div>
+        <div>ESP 到貨後先回報實物 revision／COM／周邊，從 P2-01 開始，不直接刷上游原版。</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>8. 證據與可追溯文件</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>文件／程式</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td><a href="PHASE1_WORKLOG.md">docs/PHASE1_WORKLOG.md</a></td><td>實際執行 ledger、P1-01 測試與尚未完成清單。</td></tr>
+            <tr><td><a href="IMPLEMENTATION_STATUS.md">docs/IMPLEMENTATION_STATUS.md</a></td><td>既有基線功能與模型／服務狀態。</td></tr>
+            <tr><td><a href="superpowers/plans/2026-09-14-two-stage-implementation.md">兩階段總計劃</a></td><td>整體目標、依賴、驗收門檻與 Phase 2 停點。</td></tr>
+            <tr><td><a href="superpowers/plans/2026-09-14-phase1-software.md">第一階段執行清單</a></td><td>P1-01～P1-10 的檔案、測試與接受條件。</td></tr>
+            <tr><td><a href="superpowers/plans/2026-09-14-phase2-esp.md">第二階段 ESP 清單</a></td><td>硬體盤點、韌體、MQTT／UDP 與真機驗收。</td></tr>
+            <tr><td><a href="../services/dialogue/app.py">services/dialogue/app.py</a></td><td>目前 FastAPI 路由、登入、聊天、轉錄與授權入口。</td></tr>
+            <tr><td><a href="../services/storage/settings.py">services/storage/settings.py</a></td><td>AppData/Local 執行期設定與 legacy 路徑相容性。</td></tr>
+            <tr><td><a href="PHASE1_WORKLOG.md">P1-01 執行紀錄</a></td><td>變更檔案、TDD 證據與剩餘部署注意事項。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="caption">Taskboard：本環境找不到 <code>taskctl</code>，因此無法讀取或同步 <code>LOCAL-3</code> 狀態；本報告只引用專案檔案與新鮮測試證據，不臆測議題狀態。</p>
+    </section>
+
+    <footer>
+      本報告是狀態快照。第一階段 PC acceptance 已具備可執行條件：完成首次設定與 simulator token 後雙擊 <code>一鍵啟動.bat</code>，即可登入 Dashboard、註冊使用者、錄製三段聲紋並以電腦麥克風測試 WAV ASR／WebSocket 對話。RAG 客製知識仍維持停用；真人聲紋／TTS 校準、正式資料切換與 ESP 韌體列入後續驗收。
+    </footer>
+  </main>
+</body>
+</html>

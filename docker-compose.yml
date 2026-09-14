@@ -1,0 +1,21 @@
+services:
+  dialogue:
+    build: .
+    container_name: iotgroup5-dialogue
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env.docker
+    environment:
+      IOT_DATA_DIR: /var/lib/iotgroup5
+      DATABASE_PATH: /var/lib/iotgroup5/emotional_robot.sqlite3
+      ASR_MODEL_PATH: /models/asr/whisper-large-v3-turbo-ct2
+      PROJECT_HOST: 0.0.0.0
+      PROJECT_PORT: 8080
+    volumes:
+      - iotgroup5-data:/var/lib/iotgroup5
+      - ./models:/models:ro
+
+volumes:
+  iotgroup5-data:

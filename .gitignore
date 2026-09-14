@@ -1,0 +1,35 @@
+.env
+.env.*
+!.env.example
+!.env.docker.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.superpowers/
+.coverage
+htmlcov/
+
+# Runtime data, credentials, recordings and generated reports.
+data/**/*.db
+data/**/*.sqlite*
+data/**/*.wav
+data/**/*.webm
+data/**/*.mp3
+data/**/*.mp4
+data/secrets/
+logs/
+runtime/
+reports/
+
+# Model artifacts are downloaded from the manifest, never committed.
+models/**
+!models/README.md
+!models/manifest.json
+
+# Local editor and OS files.
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini

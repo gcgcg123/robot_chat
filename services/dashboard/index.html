@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>心語 · IoT 情緒陪伴後台</title>
+  <link rel="stylesheet" href="/dashboard-assets/dashboard.css" />
+  <style>.user-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}.user-row{display:flex;justify-content:space-between;align-items:center;padding:14px;border:1px solid #e6ebf2;color:inherit;text-decoration:none;background:#fff}.user-row:hover{border-color:#26ad8a}.user-row small{display:block;color:#9aa5b5;margin-top:4px}</style>
+</head>
+<body>
+  <div id="login-screen" class="login-screen" hidden>
+    <form id="login-form" class="login-card">
+      <div class="brand"><span class="brand-mark">♡</span><div><strong>心語</strong><small>IoT 情緒陪伴後台</small></div></div>
+      <h1>管理員登入</h1>
+      <p>登入後管理使用者、聲紋登記與模擬器測試。</p>
+      <label>管理員帳號<input id="login-actor" name="actor_id" autocomplete="username" required value="admin"></label>
+      <label>密碼<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary-btn">登入 Dashboard</button>
+      <div id="login-error" class="form-error" role="alert"></div>
+    </form>
+  </div>
+  <div class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">♡</span><div><strong>心語</strong><small>IoT 情緒陪伴後台</small></div></div>
+      <nav>
+        <a class="nav-item active" href="#overview">⌂ <span>總覽</span></a>
+        <a class="nav-item" href="#emotions">◌ <span>情緒分析</span></a>
+        <a class="nav-item" href="#devices">⌁ <span>IoT 裝置</span></a>
+        <a class="nav-item" href="#conversations">▤ <span>對話紀錄</span></a>
+        <a class="nav-item" href="#users">◎ <span>使用者列表</span></a>
+        <a class="nav-item" href="#events">⚙ <span>系統事件</span></a>
+      </nav>
+      <div class="sidebar-footer"><span class="demo-dot"></span> Simulator / Demo data</div>
+    </aside>
+    <main class="content">
+      <header class="topbar"><div><p class="eyebrow">安全、私密的情緒陪伴空間</p><h1>系統總覽</h1></div><div id="service-status" class="status-badge pending">檢查服務中…</div></header>
+      <section id="overview" class="metric-grid">
+        <article class="metric-card"><span class="metric-icon pink">♡</span><div><span>今日對話</span><strong id="conversation-count">—</strong><small id="conversation-delta">等待資料</small></div></article>
+        <article class="metric-card"><span class="metric-icon lavender">◌</span><div><span>活躍使用者</span><strong id="user-count">—</strong><small>近 24 小時</small></div></article>
+        <article class="metric-card"><span class="metric-icon mint">⌁</span><div><span>線上裝置</span><strong id="online-count">—</strong><small id="device-summary">等待 heartbeat</small></div></article>
+        <article class="metric-card"><span class="metric-icon amber">◷</span><div><span>平均回應延遲</span><strong id="latency">—</strong><small>本地紀錄</small></div></article>
+      </section>
+      <section class="dashboard-grid">
+        <article id="emotions" class="panel emotion-panel"><div class="panel-heading"><div><h2>情緒概況</h2><p>依最近對話事件統計</p></div><span class="panel-tag">LIVE</span></div><div class="emotion-bars" id="emotion-bars"><div class="empty-state">等待情緒資料</div></div></article>
+        <article id="devices" class="panel"><div class="panel-heading"><div><h2>IoT 裝置健康度</h2><p>依 heartbeat 判斷連線狀態</p></div><span class="panel-tag">60s TTL</span></div><div id="device-list" class="device-list"><div class="empty-state">等待 ESP 或 simulator 上報</div></div></article>
+      </section>
+      <section id="conversations" class="panel"><div class="panel-heading"><div><h2>最近對話紀錄</h2><p>ESP 語音輸入經 ASR 與 LLM 處理後的後台摘要</p></div><button class="refresh-btn" id="refresh-btn">重新整理</button></div><div class="table-wrap"><table><thead><tr><th>時間</th><th>使用者 / 裝置</th><th>情緒</th><th>輸入摘要</th><th>回應摘要</th><th>模型</th></tr></thead><tbody id="conversation-rows"><tr><td colspan="6" class="empty-state">等待對話資料</td></tr></tbody></table></div></section>
+      <section id="users" class="panel"><div class="panel-heading"><div><h2>使用者列表</h2><p>已登記個資與聲紋狀態；裝置在線不代表本人在場</p></div><div class="panel-actions"><button id="new-user-btn" class="primary-btn" type="button">註冊新使用者</button><a href="/simulator" class="refresh-btn">開啟 PC 模擬器</a></div></div><div id="user-list" class="user-list"><div class="empty-state">等待使用者資料</div></div></section>
+      <section id="events" class="panel system-panel"><div class="panel-heading"><div><h2>系統狀態</h2><p>目前不會顯示任何 API key 或原始音訊</p></div><button id="logout-btn" class="refresh-btn" type="button">登出</button></div><div class="system-grid"><div><span>ASR</span><strong id="asr-status">已配置</strong></div><div><span>DeepSeek</span><strong id="llm-status">檢查中</strong></div><div><span>資料庫</span><strong id="db-status">SQLite</strong></div><div><span>硬體整合</span><strong class="muted">等待 ESP</strong></div></div></section>
+      <footer>情緒陪伴機器人 · 僅供技術研究與 IoT 專案展示，不提供醫療診斷。</footer>
+    </main>
+  </div>
+  <script src="/dashboard-assets/dashboard.js"></script>
+  <script src="/dashboard-assets/login.js"></script>
+</body>
+</html>

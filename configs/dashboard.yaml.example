@@ -1,0 +1,11 @@
+dashboard:
+  device_online_ttl_seconds: 60
+  device_offline_ttl_seconds: 300
+  conversation_retention_days: 30
+  polling_seconds: 5
+  demo_mode: true
+gateway:
+  mqtt_gateway_url: ""
+  mqtt_port: 1883
+  udp_port: 8884
+  api_port: 8007
