@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小智 ESP32 參考整合與模擬 ESP 改良方案</title>
+<style>
+:root{font-family:Segoe UI,system-ui,sans-serif;color:#1e293b;background:#f5f7fb;line-height:1.7}body{max-width:1100px;margin:auto;padding:32px 22px}header,section{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:25px;margin:0 0 18px;box-shadow:0 8px 24px #1720330b}h1{margin:0 0 8px;font-size:30px}h2{margin:0 0 12px;color:#0f766e}h3{margin-bottom:6px}p{margin:8px 0}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{text-align:left;padding:10px;border-top:1px solid #e5e7eb;vertical-align:top}th{background:#f0fdfa;color:#115e59}.tag{display:inline-block;padding:3px 9px;border-radius:99px;font-size:12px;font-weight:600}.reuse{background:#dcfce7;color:#166534}.design{background:#fef3c7;color:#92400e}.phase2{background:#dbeafe;color:#1e40af}.flow{font-family:Consolas,monospace;background:#0f172a;color:#d1fae5;border-radius:12px;padding:16px;white-space:pre-wrap}.note{border-left:4px solid #0d9488;background:#f0fdfa;padding:12px 16px}.warn{border-left:4px solid #d97706;background:#fffbeb;padding:12px 16px}
+</style></head>
+<body>
+<header><h1>小智 ESP32 參考整合與模擬 ESP 改良方案</h1><p>專案：IoT 情感陪伴機器人　|　版本：2026-09-14</p><p>參考資料：<code>v2.5.0_alientek-atk-dnesp32s3</code>（編譯韌體）及 <code>xiaozhi-esp32-2.5.0</code>（完整原始碼）。</p></header>
+<section><h2>一、整合原則</h2><p>小智是 ESP 韌體與通訊參考；我們的 Python 後端、情緒分析、聲紋、使用者管理和 Dashboard 是本專案核心。整合會採用相容的事件概念，保留自己的資料模型和安全邊界，避免直接把小智 server 或預設 AI 服務當成我們的產品邏輯。</p><div class="flow">ESP 麥克風／按鍵
+  → WebSocket session
+  → 後端接收 audio 或文字事件
+  → ASR → 聲紋識別 → 情緒／風險分析 → DeepSeek
+  → TTS segment + display.state
+  → ESP LCD 字幕、表情、播放</div></section>
+<section><h2>二、可直接套用或按協定實作的內容</h2><table><tr><th>內容</th><th>來源位置</th><th>整合方式</th></tr>
+<tr><td><span class="tag reuse">直接參考</span> WebSocket 事件生命週期</td><td><code>main/protocols/websocket_protocol.*</code><br><code>docs/websocket_zh.md</code></td><td>參考 session、turn、STT/TTS 的順序；後端保留自己的認證和使用者歸屬。</td></tr>
+<tr><td><span class="tag reuse">直接參考</span> MQTT 註冊與狀態</td><td><code>main/protocols/mqtt_protocol.*</code></td><td>第二階段加入裝置註冊、heartbeat 和配置下發；不把 MQTT 當作音訊串流主通道。</td></tr>
+<tr><td><span class="tag reuse">直接參考</span> LCD／LVGL 抽象</td><td><code>main/display/lcd_display.*</code><br><code>main/display/lvgl_display/*</code></td><td>參考畫面更新、字型、圖片、動畫和記憶體管理；目前先在 Canvas 模擬。</td></tr>
+<tr><td><span class="tag reuse">直接參考</span> 表情與圖片資源概念</td><td><code>emoji_collection.*</code><br><code>scripts/Image_Converter/*</code></td><td>參考 RGB565/LVGL 資源轉換；情感標籤與表情名稱由我們重新定義。</td></tr>
+<tr><td><span class="tag reuse">直接參考</span> 音訊佇列與播放事件</td><td><code>main/audio/*</code><br><code>main/application.*</code></td><td>參考半雙工錄音、播放、打斷和 segment ack；後端仍使用自己的 ASR/TTS provider。</td></tr>
+</table></section>
+<section><h2>三、必須由我們自行設計的內容</h2><table><tr><th>自行設計項目</th><th>設計決策</th><th>第一階段實作位置</th></tr>
+<tr><td><span class="tag design">自行設計</span> 情緒狀態機</td><td>idle、listening、transcribing、thinking、speaking、happy、sad、anxious、urgent、offline；狀態由後端事件和情緒分析驅動。</td><td><code>services/device_gateway/contracts.py</code>、<code>simulator.js</code></td></tr>
+<tr><td><span class="tag design">自行設計</span> LCD 模擬外觀</td><td>模擬 2.4 吋實體裝置，顯示表情、狀態、音量波形、字幕和播放進度；長文字自動分頁。</td><td><code>simulator.html/css/js</code></td></tr>
+<tr><td><span class="tag design">自行設計</span> 情緒與風險映射</td><td>negative 顯示安慰表情，positive 顯示歡迎表情，urgent 顯示人工關注提示；風險訊息不直接當成醫療診斷。</td><td><code>services/analysis</code>、WebSocket payload</td></tr>
+<tr><td><span class="tag design">自行設計</span> 聲紋和個人資料</td><td>三步登記、三語範本、偏好語言、同意與刪除流程；小智沒有這套產品資料模型。</td><td><code>services/enrollment</code>、<code>services/users</code></td></tr>
+<tr><td><span class="tag design">自行設計</span> 後端安全與資料隔離</td><td>admin/device session、CSRF、共享／個人／分析資料域、刪除稽核；不直接照搬小智的帳戶邏輯。</td><td><code>services/security</code>、<code>services/storage</code></td></tr>
+<tr><td><span class="tag design">自行設計</span> 語言與 TTS 策略</td><td>粵語、普通話、英語分開保存偏好和登記語言；ASR 可自動判斷，TTS 缺少音色時顯示提示。</td><td><code>services/enrollment/languages.py</code>、simulator</td></tr>
+</table></section>
+<section><h2>四、目前模擬 ESP 的改良規格</h2><p>模擬器不是一般聊天頁，而是用來預覽未來 ESP LCD 的狀態。畫面固定包含裝置外框、LCD 區域、狀態燈、表情圖像、字幕區、音量 meter 和播放中的 segment 指示。</p><div class="flow">turn.started       → listening + 清空本輪字幕
+stt.final           → transcribing + 顯示使用者字幕
+turn.processing     → thinking + 思考動畫
+tts.segment         → speaking + 逐段字幕 + 播放／進度
+tts.end             → idle + 保留最後回覆
+turn.failed         → error + 可重試提示
+heartbeat stale     → offline + 連線提示</div><p>長字幕會以 LCD 寬度估算自動換行，最多顯示固定行數；新 segment 到達時只更新必要區域，避免畫面閃爍。</p></section>
+<section><h2>五、第二階段才接真 ESP 的項目</h2><table><tr><th>項目</th><th>原因</th></tr>
+<tr><td><span class="tag phase2">第二階段</span> DNESP32S3 GPIO、LCD controller、I2S 麥克風／Codec</td><td>要以實際 PCB 和 2.4 吋 LCD 型號核對，不能只靠 Release 檔名猜測。</td></tr>
+<tr><td><span class="tag phase2">第二階段</span> 韌體編譯、燒錄、Wi-Fi 配置、OTA</td><td>需要 ESP-IDF、USB 驅動和實體裝置。</td></tr>
+<tr><td><span class="tag phase2">第二階段</span> 真音訊串流、播放打斷、LCD 效能</td><td>需要量測實機延遲、PSRAM、記憶體和音訊時序。</td></tr>
+<tr><td><span class="tag phase2">第二階段</span> MQTT／UDP bridge</td><td>先完成 WebSocket 端到端，再加入控制面與局域網傳輸，降低除錯範圍。</td></tr>
+</table></section>
+<section><h2>六、驗收標準</h2><ol><li>模擬器可依 WebSocket 事件顯示 listening、thinking、speaking、idle、error。</li><li>使用者語音字幕、機器人回覆字幕和表情狀態同步更新。</li><li>長句自動換行，不溢出 LCD 模擬區域。</li><li>切換使用者或語言時，不會沿用上一輪表情、字幕或聲紋登記狀態。</li><li>服務中斷或 heartbeat stale 時，模擬器明確顯示離線狀態。</li><li>真 ESP 接入前，不把未核對的 GPIO、LCD controller 或韌體 binary 當成已支援。</li></ol><div class="warn">這份報告中的「直接參考」代表沿用概念、介面順序或工具方法，不代表把小智的程式碼、服務或授權內容原封不動放入我們的產品。</div></section>
+<section><h2>七、改造順序</h2><ol><li>建立 display event contract。</li><li>讓後端 WebSocket 在 turn、STT、TTS 節點發出 display state。</li><li>改造 Canvas 模擬器為實體 LCD 視窗。</li><li>加入字幕分頁、表情動畫、音量和播放進度。</li><li>補測試與文件，然後才接真 ESP 韌體。</li></ol></section>
+</body></html>

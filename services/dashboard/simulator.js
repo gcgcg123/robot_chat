@@ -208,6 +208,13 @@
     c.fillStyle="#eef3f8";c.font="15px system-ui";
     const chars=Array.from(text); for(let i=0;i<4;i++)c.fillText(chars.slice(i*18,(i+1)*18).join(""),160,115+i*24);
   }
+  function displayState(payload={}) {
+    const state=payload.state||'idle', emotion=payload.emotion||'neutral', caption=payload.caption||'';
+    const canvas=$('display'), context=canvas.getContext('2d');
+    const colors={idle:'#8de0c3',listening:'#8dd2ff',transcribing:'#c5b4ff',thinking:'#ffd580',speaking:emotion==='negative'?'#ff9b9b':'#8de0c3',error:'#ff9b9b'};
+    context.fillStyle='#152137';context.fillRect(0,0,320,240);context.textAlign='center';context.fillStyle=colors[state]||colors.idle;context.font='42px system-ui';context.fillText(state==='happy'?'☺':state==='sad'?'☹':state==='urgent'?'!':state==='error'?'×':'♡',160,72);context.fillStyle='#eef3f8';context.font='14px system-ui';context.fillText(state,160,108);
+    const chars=Array.from(caption);for(let i=0;i<4;i++)context.fillText(chars.slice(i*20,(i+1)*20).join(''),160,140+i*22);
+  }
   async function initialize(){
     try{
       const auth=await api("/api/auth/session");window.__iotCsrf=auth.csrf_token;
@@ -220,7 +227,8 @@
       socket.onerror=()=>toast("WebSocket 連線失敗，請檢查後端。");
       socket.onmessage=event=>{
         const m=JSON.parse(event.data);
-        if(m.type==="stt.final")$("captions").textContent=m.payload.text;
+        if(m.type==="display.state")displayState(m.payload);
+        if(m.type==="stt.final"){$("captions").textContent=m.payload.text;displayState({state:'transcribing',caption:m.payload.text});}
         if(m.type==="tts.segment"){
           $("captions").textContent+=" → "+m.payload.text;draw(m.payload.text,m.payload.result?.emotion);
           speak(m.payload.text,m.payload.language||language());

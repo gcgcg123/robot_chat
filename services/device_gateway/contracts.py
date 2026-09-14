@@ -5,7 +5,7 @@ from typing import Any
 import uuid
 
 
-EVENT_TYPES = {"turn.started", "stt.final", "tts.segment", "tts.end", "turn.interrupted", "turn.failed", "playback.started", "playback.completed"}
+EVENT_TYPES = {"turn.started", "display.state", "stt.final", "tts.segment", "tts.end", "turn.interrupted", "turn.failed", "playback.started", "playback.completed"}
 
 
 @dataclass(frozen=True)
