@@ -12,7 +12,7 @@ Docker 使用者可執行 `powershell -ExecutionPolicy Bypass -File scripts/boot
 
 ## 一鍵啟動（Windows）
 
-第一次雙擊 `首次設定.bat`，安全輸入 DeepSeek key。之後平常只需要雙擊：
+第一次雙擊 `一鍵安裝並啟動.bat`，依提示安全輸入 DeepSeek key 與管理員密碼；之後平常只需要雙擊：
 
 ```text
 一鍵啟動.bat

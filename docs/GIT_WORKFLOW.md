@@ -12,7 +12,7 @@ cd robot_chat
 git submodule update --init --recursive
 ```
 
-Then create the Python environment with `首次設定.bat` and download the model:
+Then create the Python environment with `一鍵安裝並啟動.bat` and download the model:
 
 ```powershell
 .\scripts\download-model.ps1

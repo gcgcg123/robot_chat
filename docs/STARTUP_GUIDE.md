@@ -9,8 +9,8 @@ C:\Users\gcgcg\OneDrive\Desktop\IoT_group5\project_place
 ## 第一次使用
 
 1. 在 DeepSeek 控制台撤銷曾經貼到聊天或 `cmd.txt` 的舊 key，建立一個新 key。
-2. 雙擊專案根目錄的 `首次設定.bat`。
-3. 在提示出現後貼上新 DeepSeek API key，再按 Enter。
+2. 雙擊專案根目錄的 `一鍵安裝並啟動.bat`。
+3. 首次執行時，在提示出現後輸入 DeepSeek API key 與 Dashboard 管理員密碼，再按 Enter。
 
 輸入內容不會顯示。key 會使用 Windows DPAPI 加密後保存到：
 
@@ -22,7 +22,7 @@ data\secrets\deepseek.key
 
 ### ZIP 使用者的一鍵方式
 
-從 GitHub 下載 ZIP 並解壓後，直接雙擊根目錄的 `一鍵安裝並啟動.bat`。腳本會自動建立 `.venv`、安裝依賴、下載缺少的 Xiaozhi 參考程式與 ASR 模型，然後執行首次安全設定和 simulator token provision。這需要 Python 3.10 或更新版本、Git 和網路連線。
+從 GitHub 下載 ZIP 並解壓後，直接雙擊根目錄的 `一鍵安裝並啟動.bat`。腳本會自動建立 `.venv`、安裝依賴、下載缺少的 Xiaozhi 參考程式與 ASR 模型，並在首次執行時完成密鑰、管理員密碼與 simulator token 設定；後續再次執行會直接啟動服務。這需要 Python 3.10 或更新版本、Git 和網路連線。
 
 ### Docker 方式
 
@@ -141,7 +141,7 @@ data\secrets\ 加密的 DeepSeek key
 
 ### 雙擊後提示找不到虛擬環境
 
-先執行 `首次設定.bat`。它會檢查虛擬環境並安裝 `requirements.txt`。
+先執行 `一鍵安裝並啟動.bat`。它會檢查虛擬環境並安裝 `requirements.txt`。
 
 ### 8080 已被使用
 

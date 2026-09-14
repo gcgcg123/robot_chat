@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Force -Path $tokenDirectory | Out-Null
 $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $venvPython)) {
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pythonCommand) { throw "Virtual environment not found and python is unavailable. Run 首次設定.bat first." }
+    if (-not $pythonCommand) { throw "Virtual environment not found and python is unavailable. Run 一鍵安裝並啟動.bat first." }
     $venvPython = $pythonCommand.Source
 }
 

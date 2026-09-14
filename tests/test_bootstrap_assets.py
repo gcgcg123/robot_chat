@@ -6,6 +6,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_zip_bootstrap_and_docker_assets_are_present_and_credentials_are_ignored():
     assert (ROOT / "一鍵安裝並啟動.bat").exists()
+    assert (ROOT / "一鍵啟動.bat").exists()
+    assert (ROOT / "開發模式.bat").exists()
+    assert (ROOT / "一鍵停止.bat").exists()
+    assert not (ROOT / "首次設定.bat").exists()
     assert (ROOT / "scripts" / "bootstrap-project.ps1").exists()
     assert (ROOT / "Dockerfile").exists()
     assert (ROOT / "docker-compose.yml").exists()

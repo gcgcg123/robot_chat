@@ -1,6 +1,6 @@
 # PC Phase 1 acceptance
 
-1. Run `首次設定.bat` once. Set a Dashboard administrator password; the API key is optional because the dialogue service has a local fallback.
+1. Run `一鍵安裝並啟動.bat` once. Set a Dashboard administrator password; the API key is optional because the dialogue service has a local fallback.
 2. Run `scripts\provision-simulator.ps1 -DataDir "$env:LOCALAPPDATA\IoTGroup5" -DeviceId pc-sim` if heartbeat is enabled.
 3. Double-click `一鍵啟動.bat`. The browser opens only after `/health` is ready.
 4. Sign in with the administrator account and password.
