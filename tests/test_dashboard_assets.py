@@ -18,3 +18,9 @@ def test_dashboard_is_read_only_monitoring_surface():
 def test_dashboard_assets_exist():
     assert (ROOT / "services" / "dashboard" / "dashboard.css").exists()
     assert (ROOT / "services" / "dashboard" / "dashboard.js").exists()
+
+
+def test_login_overlay_hidden_attribute_overrides_grid_layout():
+    html = (ROOT / "services" / "dashboard" / "index.html").read_text(encoding="utf-8")
+    assert ".login-screen[hidden]" in html
+    assert "display:none!important" in html.replace(" ", "")
