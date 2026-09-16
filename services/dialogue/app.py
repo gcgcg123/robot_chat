@@ -488,6 +488,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             application.state.enrollment_service.collecting(enrollment_id)
             vectors = [application.state.voiceprint_provider.embed(sample) for sample in item.samples]
             embedding = [sum(values) / len(values) for values in zip(*vectors)]
+            norm = sum(value * value for value in embedding) ** 0.5
+            if norm <= 1e-12:
+                raise ValueError("empty_embedding")
+            embedding = [value / norm for value in embedding]
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
