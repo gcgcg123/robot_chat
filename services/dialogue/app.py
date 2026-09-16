@@ -530,7 +530,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 try: values = open_sealed(row["embedding_json"])
                 except (ValueError, TypeError): continue
                 templates.append({"template_id": row["template_id"], "user_id": row["user_id"], "embedding": values, "active": bool(row["active"])})
-            result = identify_voiceprint(vector, templates)
+            result = identify_voiceprint(vector, templates, provider=model_version)
             with db() as conn:
                 record_audit(
                     conn,
