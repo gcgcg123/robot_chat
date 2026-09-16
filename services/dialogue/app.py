@@ -516,7 +516,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
 
     @application.post("/api/voiceprint/identify")
     async def identify_voice(request: Request, file: UploadFile = File(...)):
-        with db() as conn: admin_auth(request, conn, write=True)
+        with db() as conn: actor = admin_auth(request, conn, write=True)
         sample = await file.read()
         if not sample: raise HTTPException(status_code=422, detail="empty_audio")
         try:
@@ -531,6 +531,21 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 except (ValueError, TypeError): continue
                 templates.append({"template_id": row["template_id"], "user_id": row["user_id"], "embedding": values, "active": bool(row["active"])})
             result = identify_voiceprint(vector, templates)
+            with db() as conn:
+                record_audit(
+                    conn,
+                    actor,
+                    "voiceprint_identification",
+                    target_type="user",
+                    target_id=result.user_id,
+                    metadata={
+                        "decision": result.decision,
+                        "best_score": round(result.best_score, 6),
+                        "second_score": round(result.second_score, 6) if result.second_score is not None else None,
+                        "template_id": result.template_id,
+                        "provider": result.provider,
+                    },
+                )
             return {"decision": result.decision, "user_id": result.user_id, "best_score": result.best_score, "second_score": result.second_score, "template_id": result.template_id, "provider": result.provider}
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
