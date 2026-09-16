@@ -41,7 +41,18 @@ def identify(
         if not values or len(values) != len(embedding): return -1.0
         den = math.sqrt(sum(x*x for x in embedding) * sum(x*x for x in values)) or 1.0
         return sum(a*b for a,b in zip(embedding, values)) / den
-    ranked = sorted(((score(t), t) for t in templates if t.get("active", True)), key=lambda x: x[0], reverse=True)
+    best_by_user = {}
+    for template in templates:
+        if not template.get("active", True):
+            continue
+        candidate_score = score(template)
+        user_id = template.get("user_id")
+        if not user_id:
+            continue
+        previous = best_by_user.get(user_id)
+        if previous is None or candidate_score > previous[0]:
+            best_by_user[user_id] = (candidate_score, template)
+    ranked = sorted(best_by_user.values(), key=lambda x: x[0], reverse=True)
     if not ranked: return IdentityResult("unknown", None, -1.0, None, None, "pc-baseline-v1")
     best, item = ranked[0]; second = ranked[1][0] if len(ranked) > 1 else None
     decision = classify_scores(best, second, threshold, min_margin)
