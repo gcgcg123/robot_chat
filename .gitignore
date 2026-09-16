@@ -33,3 +33,6 @@ models/**
 *.swp
 Thumbs.db
 Desktop.ini
+
+# PowerShell launch scripts are machine-local (may contain absolute paths); do not version them.
+*.ps1
