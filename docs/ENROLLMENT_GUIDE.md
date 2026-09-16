@@ -33,7 +33,7 @@
 
 正式啟動預設使用 SpeechBrain ECAPA-TDNN（`ecapa-voxceleb-v1`），登記及識別只會比較相同模型版本的模板。未知聲音或分數不夠會回傳 unknown，兩個使用者分數太接近會回傳 ambiguous；WebSocket 也會在後端驗證 active template，不能只靠前端傳入 user_id。
 
-模型首次使用時會下載到 `models/voiceprint/ecapa-voxceleb`。預設門檻兼顧日常語氣變化與陌生人拒識（`VOICEPRINT_THRESHOLD=0.65`、`VOICEPRINT_MIN_MARGIN=0.05`），可用環境變數調整；正式部署前必須用實際麥克風、噪音、距離和不同語言的真人樣本校準 FAR/FRR。測試模式仍使用 pc-baseline 替身，不代表真實聲紋準確率。切換模型版本後所有使用者都需要重新登記。
+模型首次使用時會下載到 `models/voiceprint/ecapa-voxceleb`。預設門檻兼顧日常語氣變化與陌生人拒識（`VOICEPRINT_THRESHOLD=0.55`、`VOICEPRINT_MIN_MARGIN=0.05`），可用環境變數調整；正式部署前必須用實際麥克風、噪音、距離和不同語言的真人樣本校準 FAR/FRR。測試模式仍使用 pc-baseline 替身，不代表真實聲紋準確率。切換模型版本後所有使用者都需要重新登記。
 
 ## 驗證及備份
 
