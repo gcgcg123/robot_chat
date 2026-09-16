@@ -32,9 +32,7 @@
     $("voice-status").textContent = voiceFor(language()) ? "語音回覆：" + name + "（瀏覽器音色）" : "本機未提供" + name + "音色；可查看字幕，請安裝對應系統語音後重開瀏覽器。";
   }
   function identifiedUser(text, kind = "known") {
-    const element = $("identified-user");
-    element.textContent = "聲紋使用者：" + text;
-    element.dataset.state = kind;
+    screen?.setUser(text);
   }
   function speak(text, code) {
     const voice = voiceFor(code);
@@ -174,7 +172,7 @@
         const form=new FormData();form.append("file",blob,"turn.wav");
         const identity=await api("/api/voiceprint/identify",{method:"POST",body:form});
         if(identity.decision!=="accepted") {
-          identifiedUser(identity.decision==="ambiguous"?"未錄入（無法唯一確認）":"未錄入","unknown");
+            identifiedUser(identity.decision==="ambiguous"?"未錄入（無法唯一確認）":"未錄入","unknown");
           throw Error(identity.decision==="ambiguous"?"聲紋無法唯一辨識，請重新錄音。":"聲紋庫中沒有此使用者，請先完成聲紋登記。");
         }
         selectedUser=identity.user_id;
