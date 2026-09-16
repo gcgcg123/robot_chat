@@ -63,6 +63,13 @@ def test_language_profile_and_three_confirmed_samples(tmp_path):
         assert result.status_code == 200, result.text
         # A lost final response must be safely retryable without a second template.
         assert client.post(path+"/complete").json() == result.json()
+        identified = client.post(
+            "/api/voiceprint/identify",
+            files={"file": ("turn.wav", audio, "audio/wav")},
+        )
+        assert identified.status_code == 200, identified.text
+        assert identified.json()["decision"] == "accepted"
+        assert identified.json()["user_id"] == uid
         user = client.get("/api/users/"+uid).json()
         assert user["enrollment_language"] == "en-US"
         assert user["preferred_language"] == "yue-HK"

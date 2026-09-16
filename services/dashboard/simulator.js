@@ -166,17 +166,25 @@
       chatting=true;controls();$("turn-status").textContent="語音辨識中…";
       screen.setState("transcribing");
       try{
-        // Reload the profile so a preference edited in another page applies.
-        const fresh=await api("/api/users/"+encodeURIComponent(selectedUser));
-        users=users.map(u=>u.user_id===selectedUser?fresh:u);voiceStatus();
         const form=new FormData();form.append("file",blob,"turn.wav");
+        const identity=await api("/api/voiceprint/identify",{method:"POST",body:form});
+        if(identity.decision!=="accepted") {
+          throw Error(identity.decision==="ambiguous"?"聲紋無法唯一辨識，請重新錄音。":"未辨識到已登記的聲紋，請重新錄音或先完成聲紋登記。");
+        }
+        if(identity.user_id!==selectedUser) {
+          throw Error("聲紋與目前選擇的使用者不一致。");
+        }
+        $("turn-status").textContent="聲紋已確認，語音辨識中…";
+        // Reload the profile so a preference edited in another page applies.
+        const fresh=await api("/api/users/"+encodeURIComponent(identity.user_id));
+        users=users.map(u=>u.user_id===identity.user_id?fresh:u);voiceStatus();
         if(!$("asr-auto").checked) form.append("language",languages[language()].asr);
         const transcript=await api("/api/transcribe",{method:"POST",body:form});
         if(screen.epoch!==epoch)return;
         if(!transcript.text?.trim())throw Error("沒有辨識到語音，請重試。");
         if(!socket || socket.readyState!==WebSocket.OPEN)throw Error("連線已中斷，請重新整理頁面。");
         $("captions").textContent=transcript.text;$("turn-status").textContent="等待回覆…";
-        socket.send(JSON.stringify({type:"chat",request_id:screen.requestId,text:transcript.text,user_id:selectedUser,device_id:session.device_id}));
+        socket.send(JSON.stringify({type:"chat",request_id:screen.requestId,text:transcript.text,user_id:identity.user_id,voiceprint_id:identity.template_id,device_id:session.device_id}));
       }catch(e){if(screen.epoch!==epoch)return;chatting=false;screen.fail(message(e));$("turn-status").textContent=message(e);toast(message(e));controls();}
     }
   }
