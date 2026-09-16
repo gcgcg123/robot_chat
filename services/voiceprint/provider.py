@@ -58,6 +58,29 @@ class EcapaVoiceprintProvider:
         )
         return self._model
 
+    @staticmethod
+    def _speech_samples(samples: list[float], sample_rate: int = 16000) -> list[float]:
+        frame_size = max(1, sample_rate // 50)
+        frames = [
+            samples[index:index + frame_size]
+            for index in range(0, len(samples), frame_size)
+            if len(samples[index:index + frame_size]) >= frame_size // 2
+        ]
+        if not frames:
+            return []
+        energy = [math.sqrt(sum(value * value for value in frame) / len(frame)) for frame in frames]
+        peak = max(energy) or 1.0
+        active = [value >= max(0.008, peak * 0.12) for value in energy]
+        active_indexes = [index for index, is_active in enumerate(active) if is_active]
+        if not active_indexes:
+            return samples
+        start = max(0, active_indexes[0] - 2)
+        end = min(len(frames), active_indexes[-1] + 3)
+        trimmed = [value for frame in frames[start:end] for value in frame]
+        rms = math.sqrt(sum(value * value for value in trimmed) / len(trimmed)) or 1.0
+        gain = min(4.0, 0.12 / rms)
+        return [max(-1.0, min(1.0, value * gain)) for value in trimmed]
+
     def embed(self, pcm16: bytes) -> list[float]:
         if not pcm16:
             raise ValueError("empty_audio")
@@ -68,13 +91,31 @@ class EcapaVoiceprintProvider:
             import torch
         except ImportError as exc:
             raise RuntimeError("Real voiceprint requires torch.") from exc
-        samples = [value / 32768.0 for (value,) in struct.iter_unpack("<h", usable)]
-        waveform = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
+        samples = self._speech_samples(
+            [value / 32768.0 for (value,) in struct.iter_unpack("<h", usable)]
+        )
+        if not samples:
+            raise ValueError("empty_audio")
+        sample_rate = 16000
+        chunk_size = sample_rate * 3
+        step = sample_rate * 2
+        starts = list(range(0, max(1, len(samples) - chunk_size + 1), step))
+        if not starts or starts[-1] + sample_rate > len(samples):
+            starts.append(max(0, len(samples) - chunk_size))
+        vectors = []
         with torch.inference_mode():
-            embedding = self._load().encode_batch(waveform).squeeze().detach().cpu().tolist()
-        if not isinstance(embedding, list) or not embedding:
+            model = self._load()
+            for start in dict.fromkeys(starts):
+                chunk = samples[start:start + chunk_size]
+                if len(chunk) < sample_rate:
+                    continue
+                waveform = torch.tensor(chunk, dtype=torch.float32).unsqueeze(0)
+                vector = model.encode_batch(waveform).squeeze().detach().cpu().tolist()
+                if isinstance(vector, list) and vector:
+                    vectors.append([float(value) for value in vector])
+        if not vectors:
             raise ValueError("empty_embedding")
-        values = [float(value) for value in embedding]
+        values = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(len(vectors[0]))]
         norm = math.sqrt(sum(value * value for value in values))
         if norm <= 1e-12:
             raise ValueError("empty_embedding")
