@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 
 
 @dataclass(frozen=True)
@@ -21,12 +22,20 @@ def classify_scores(best: float, second: float | None, threshold: float, min_mar
         return "ambiguous"
     return "accepted"
 
-def identify(embedding: list[float], templates: list[dict], threshold: float = 0.82, min_margin: float = 0.05) -> IdentityResult:
+def identify(
+    embedding: list[float],
+    templates: list[dict],
+    threshold: float | None = None,
+    min_margin: float | None = None,
+) -> IdentityResult:
     """Compare a normalized embedding to active templates.
 
     The PC baseline uses cosine similarity; callers can replace the provider
     and keep this decision contract unchanged.
     """
+    threshold = threshold if threshold is not None else float(os.getenv("VOICEPRINT_THRESHOLD", "0.72"))
+    min_margin = min_margin if min_margin is not None else float(os.getenv("VOICEPRINT_MIN_MARGIN", "0.08"))
+
     def score(candidate):
         values = candidate.get("embedding", candidate.get("vector", []))
         if not values or len(values) != len(embedding): return -1.0
