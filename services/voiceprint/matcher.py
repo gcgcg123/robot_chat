@@ -33,8 +33,8 @@ def identify(
     The PC baseline uses cosine similarity; callers can replace the provider
     and keep this decision contract unchanged.
     """
-    threshold = threshold if threshold is not None else float(os.getenv("VOICEPRINT_THRESHOLD", "0.72"))
-    min_margin = min_margin if min_margin is not None else float(os.getenv("VOICEPRINT_MIN_MARGIN", "0.08"))
+    threshold = threshold if threshold is not None else float(os.getenv("VOICEPRINT_THRESHOLD", "0.65"))
+    min_margin = min_margin if min_margin is not None else float(os.getenv("VOICEPRINT_MIN_MARGIN", "0.05"))
 
     def score(candidate):
         values = candidate.get("embedding", candidate.get("vector", []))
