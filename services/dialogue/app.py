@@ -501,7 +501,6 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             user = get_user(conn, item.user_id)
             if not user: raise HTTPException(status_code=404, detail='user_not_found')
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
-            conn.execute("UPDATE voiceprint_templates SET active=0 WHERE user_id=?", (item.user_id,))
             conn.execute('UPDATE users SET enrollment_language=? WHERE user_id=?', (item.language, item.user_id))
             provider = application.state.voiceprint_provider
             conn.execute("INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)", (template_id, item.user_id, seal(embedding), provider.model_version, 1, now))
