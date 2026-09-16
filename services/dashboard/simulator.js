@@ -31,6 +31,11 @@
     const name = languages[language()]?.label || language();
     $("voice-status").textContent = voiceFor(language()) ? "語音回覆：" + name + "（瀏覽器音色）" : "本機未提供" + name + "音色；可查看字幕，請安裝對應系統語音後重開瀏覽器。";
   }
+  function identifiedUser(text, kind = "known") {
+    const element = $("identified-user");
+    element.textContent = "聲紋使用者：" + text;
+    element.dataset.state = kind;
+  }
   function speak(text, code) {
     const voice = voiceFor(code);
     if (!voice) {toast("沒有此語言的語音音色，請按文字朗讀；回覆仍可查看字幕。"); return;}
@@ -45,7 +50,7 @@
     $("new-user").disabled = locked;
     $("enroll-language").disabled = locked;
     $("enroll-start").disabled = locked || !selectedUser || !session;
-    $("conversation-record").disabled = !!enrollment || uploading || opening || !selectedUser || !session || (chatting && !recording);
+    $("conversation-record").disabled = !!enrollment || uploading || opening || !session || (chatting && !recording);
     $("enroll-record").disabled = uploading || saved === 3 || (!stopRecording && recording);
     $("enroll-confirm").disabled = recording || uploading || (!preview && saved !== 3);
     $("enroll-cancel").disabled = recording || uploading;
@@ -169,11 +174,13 @@
         const form=new FormData();form.append("file",blob,"turn.wav");
         const identity=await api("/api/voiceprint/identify",{method:"POST",body:form});
         if(identity.decision!=="accepted") {
-          throw Error(identity.decision==="ambiguous"?"聲紋無法唯一辨識，請重新錄音。":"未辨識到已登記的聲紋，請重新錄音或先完成聲紋登記。");
+          identifiedUser(identity.decision==="ambiguous"?"未錄入（無法唯一確認）":"未錄入","unknown");
+          throw Error(identity.decision==="ambiguous"?"聲紋無法唯一辨識，請重新錄音。":"聲紋庫中沒有此使用者，請先完成聲紋登記。");
         }
-        if(identity.user_id!==selectedUser) {
-          throw Error("聲紋與目前選擇的使用者不一致。");
-        }
+        selectedUser=identity.user_id;
+        const identified=users.find(u=>u.user_id===identity.user_id);
+        identifiedUser(identified?.display_name || identity.user_id);
+        $("user-select").value=selectedUser;
         $("turn-status").textContent="聲紋已確認，語音辨識中…";
         // Reload the profile so a preference edited in another page applies.
         const fresh=await api("/api/users/"+encodeURIComponent(identity.user_id));
@@ -235,7 +242,7 @@
       selectedUser=new URLSearchParams(location.search).get("user")||"";await loadUsers();
       session=await api("/api/simulator/sessions",{method:"POST"});
       socket=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/ws/simulator/"+session.session_id);
-      socket.onopen=()=>{screen.begin();$("connection").textContent="語音連線已就緒";$("connection").className="state ok";$("turn-status").textContent="請選擇使用者後開始";controls();};
+      socket.onopen=()=>{screen.begin();identifiedUser("未錄入","unknown");$("connection").textContent="語音連線已就緒";$("connection").className="state ok";$("turn-status").textContent="請開始說話，系統會自動辨識使用者";controls();};
       socket.onclose=()=>{stopRecording?.();screen.offline();session=null;chatting=false;$("connection").textContent="連線中斷，請重新整理";$("connection").className="state error";controls();};
       socket.onerror=()=>{screen.offline("WebSocket 連線失敗，請重新整理");toast("WebSocket 連線失敗，請檢查後端。");};
       socket.onmessage=event=>{
