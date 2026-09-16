@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import struct
+import math
 
 
 class VoiceprintProvider:
@@ -73,7 +74,11 @@ class EcapaVoiceprintProvider:
             embedding = self._load().encode_batch(waveform).squeeze().detach().cpu().tolist()
         if not isinstance(embedding, list) or not embedding:
             raise ValueError("empty_embedding")
-        return [float(value) for value in embedding]
+        values = [float(value) for value in embedding]
+        norm = math.sqrt(sum(value * value for value in values))
+        if norm <= 1e-12:
+            raise ValueError("empty_embedding")
+        return [value / norm for value in values]
 
 
 def create_voiceprint_provider(testing: bool = False):
