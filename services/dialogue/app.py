@@ -496,17 +496,22 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        template_id = str(uuid.uuid4()); now = time.time()
+        now = time.time()
+        template_ids = [str(uuid.uuid4()) for _ in vectors]
         with db() as conn:
             user = get_user(conn, item.user_id)
             if not user: raise HTTPException(status_code=404, detail='user_not_found')
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
             conn.execute('UPDATE users SET enrollment_language=? WHERE user_id=?', (item.language, item.user_id))
             provider = application.state.voiceprint_provider
-            conn.execute("INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)", (template_id, item.user_id, seal(embedding), provider.model_version, 1, now))
+            for template_id, vector in zip(template_ids, vectors):
+                conn.execute(
+                    "INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)",
+                    (template_id, item.user_id, seal(vector), provider.model_version, 1, now),
+                )
             conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(item.samples), "template_id": template_id})
         item.state = "completed"; item.samples.clear()
-        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_id, "model_version": provider.model_version}
+        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_ids[0], "template_ids": template_ids, "model_version": provider.model_version}
         return item.result
 
     @application.post("/api/voiceprint/identify")
