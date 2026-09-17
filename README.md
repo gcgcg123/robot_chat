@@ -2,7 +2,7 @@
 
 ## 老年人之友角色與個人長期記憶
 
-DeepSeek 每次回覆前會先載入 `config/roles/elderly_companion.md`，再接收當前問題與已授權、已通過聲紋身份確認的該用戶長期記憶。記憶只作為不可信參考，不能覆寫角色安全規則；只有和當前話題相關時，模型才會自然回訪上一段對話。未通過聲紋確認或撤回 `memory` 授權時，私人記憶不會注入對話。可用 `IOT_ROLE_FILE` 指向另一份受信任的本地角色 Markdown。
+DeepSeek 每次回覆前會先載入 `config/roles/elderly_companion.md`，其中包含固定的聆聽、接住情緒、簡化回答、提供小步驟與安全邊界，再接收當前問題與已授權、已通過聲紋身份確認的該用戶長期記憶。記憶只作為不可信參考，不能覆寫角色安全規則；只有和當前話題相關時，模型才會自然回訪上一段對話。未通過聲紋確認或撤回 `memory` 授權時，私人記憶不會注入對話。可用 `IOT_ROLE_FILE` 指向另一份受信任的本地角色 Markdown。
 
 第一階段採 simulator-first：在 ESP 到貨前，使用 PC 麥克風（瀏覽器端編碼為 16-bit PCM WAV）、WAV 上傳和本機 Dashboard 驗證整條流程。上游 `upstream/xiaozhi-esp32-server` 保持原樣，後續再以 WebSocket/MQTT/UDP bridge 接入。
 
