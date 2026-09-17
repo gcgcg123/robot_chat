@@ -20,13 +20,14 @@
 - PC 端可由 `一鍵啟動.bat` 啟動；已完成登入、Dashboard、使用者建立、三段聲紋登記、PC 麥克風 WAV 錄音、ASR、情緒／風險分析、WebSocket 字幕事件與本機 fallback 對話。
 - 自動化驗證：`python -m pytest tests -q` 為 **71 passed、6 warnings**；`python -m compileall -q services simulator scripts` 成功。
 - 本地 Turbo CT2 模型已以 CPU `int8` 完成轉錄 smoke；CUDA 不可用時會明確降級，不阻塞 PC 驗收。
-- RAG 客製知識庫未啟用。保留 scope／consent 邊界及 optional RAGFlow adapter，待專案自行定義資料、embedding、來源與治理規則。
+- RAGFlow 客製知識庫仍未啟用。已提供可選的本地 sentence-transformers embedding 檢索；未配置模型時使用 lexical fallback，並保留 scope／consent 邊界。
 
 ## 尚未啟動
 
 - 實際 DeepSeek 請求（需要由使用者在本機安全注入新密鑰）。
 - RTX 2060 的 CUDA/cuDNN runtime 尚未在本機驗證；ASR 端點保留 CPU `int8` fallback，GPU 推理需後續安裝/驗證 CUDA 12 + cuDNN 9 runtime。
 - 真人瀏覽器麥克風／喇叭聽感與播放 ACK 驗收（PC 端 PCM/WAV 錄音與 WebSocket 事件已實作）。
-- 3D-Speaker／ECAPA 聲紋 embedding、模板加密與真人 FA/FR 校準。
-- RAGFlow／embedding 外部部署與 DeepSeek 付費 smoke（本輪未呼叫）。
+- 真人聲紋 FAR/FRR 校準及跨麥克風、噪聲條件驗收。
+- 情緒／風險 Transformers 模型和 sentence-transformers embedding 仍需下載指定模型並以專案樣本驗證；目前實作是可選、lazy、離線安全的模型適配器。
+- RAGFlow 外部部署與 DeepSeek 付費 smoke（本輪未呼叫）。
 - MQTT/UDP broker、OTA、launcher ownership hardening、ESP 真機測試與 LCD 字幕／角色。

@@ -7,3 +7,6 @@ faster-whisper>=1.1,<2
 speechbrain>=1.0,<2
 torch>=2.2,<3
 torchaudio>=2.2,<3
+# Optional, lazy local text classifiers/embeddings (models are never downloaded at startup).
+transformers>=4.45,<5
+sentence-transformers>=3.0,<6

@@ -93,7 +93,7 @@
         tick:count=>reveal(count),
         end:()=>{if(!valid())return;reveal(p.text.length);this.active=false;this.cancel=null;this.pump();this.finish();},
         error:()=>{if(valid()){this.model.mode="播放失敗 · 字幕預覽";this.emit();}}
-      });
+      },p.media_url);
     }
     finish(){
       if(!this.done || this.active || this.queue.length || this.completed)return;
@@ -105,8 +105,8 @@
   function createSpeechPlayer(options){
     const now=options.now||(()=>Date.now()), every=options.setInterval||setInterval, stop=options.clearInterval||clearInterval;
     const later=options.setTimeout||setTimeout, clear=options.clearTimeout||clearTimeout;
-    return (text,language,hooks)=>{
-      let ended=false,started=false,audio=false,boundaries=false,timer,watchdog,startAt=now(),u;
+    return (text,language,hooks,mediaUrl)=>{
+      let ended=false,started=false,audio=false,boundaries=false,timer,watchdog,startAt=now(),u,media;
       const cleanup=()=>{stop(timer);clear(watchdog);};
       const end=()=>{if(ended)return;ended=true;cleanup();hooks.end();};
       // Code-point offsets preserve surrogate pairs when revealing emoji.
@@ -122,6 +122,29 @@
         if(u){u.onstart=u.onboundary=u.onend=u.onerror=null;options.speech?.cancel();}
         hooks.start(false);hooks.error();timer=every(animate,50);
       };
+      const fallbackSpeech=()=>{
+        const voice=options.voiceFor(language);
+        if(!voice || !options.speech || !options.Utterance){preview();return;}
+        u=new options.Utterance(text);u.voice=voice;u.lang=voice.lang;
+        u.onstart=()=>{if(ended||started)return;started=true;audio=true;startAt=now();hooks.start(true);timer=every(animate,50);};
+        u.onboundary=e=>{if(ended)return;boundaries=true;hooks.boundary(Math.min(text.length,e.charIndex+(e.charLength||1)));};
+        u.onend=end;u.onerror=preview;
+        try{options.speech.speak(u);}catch(_){preview();}
+      };
+      if(mediaUrl){
+        const AudioCtor=options.Audio||globalThis.Audio;
+        if(AudioCtor){
+          try{
+            media=new AudioCtor(mediaUrl);media.preload="auto";
+            media.onplay=()=>{if(ended||started)return;started=true;audio=true;startAt=now();hooks.start(true);timer=every(animate,50);};
+            media.ontimeupdate=()=>{if(ended||!audio||!media.duration)return;hooks.tick(Math.min(text.length,Math.floor(media.currentTime/media.duration*text.length)));};
+            media.onended=end;
+            media.onerror=()=>{if(!ended){media.onplay=media.ontimeupdate=media.onended=media.onerror=null;cleanup();started=false;audio=false;fallbackSpeech();}};
+            try{const result=media.play();if(result?.catch)result.catch(()=>media.onerror());}catch(_){media.onerror();}
+          }catch(_){fallbackSpeech();}
+        }else fallbackSpeech();
+        return ()=>{ended=true;cleanup();if(media){media.onplay=media.ontimeupdate=media.onended=media.onerror=null;media.pause?.();media.src="";}if(u){u.onstart=u.onboundary=u.onend=u.onerror=null;options.speech?.cancel();}};
+      }
       const voice=options.voiceFor(language);
       if(!voice || !options.speech || !options.Utterance){
         started=true;hooks.start(false);timer=every(animate,50);

@@ -39,7 +39,7 @@ uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 
 ## 目前端點
 
-三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。目前聲紋仍是示範模型，PC 以所選使用者模擬對話歸屬。
+三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。正式模式使用 SpeechBrain ECAPA-TDNN 聲紋 embedding 自動識別說話者；測試模式才使用 deterministic baseline，PC 對話會先通過聲紋模板校驗。
 
 - `GET /health`：服務狀態
 - `POST /api/chat`：文字對話、情緒標籤、SQLite 紀錄
@@ -65,10 +65,17 @@ python simulator\heartbeat.py --device-id verification-sim --interval 10
 - `GET/POST /api/users/{user_id}/memories`、`DELETE /api/users/{user_id}/memories/{memory_id}`：管理員限定的個人記憶操作。
 - `POST /api/simulator/sessions`、`GET /simulator`：PC 麥克風／喇叭／320×240 顯示能力的模擬器基礎。
 
-P1 核心模組也提供 `services/tts`、`services/voiceprint`、`services/memory`、`services/dialogue/pipeline.py` 與 `services/device_gateway/mqtt_udp.py`。其中 TTS deterministic provider、聲紋 provider 與 UDP peer 是可測試 contract，並不等同真人聲紋、中文聽感或 ESP 真機通過。
+P1 核心模組也提供 `services/tts`、`services/voiceprint`、`services/memory`、`services/dialogue/pipeline.py` 與 `services/device_gateway/mqtt_udp.py`。Windows TTS 已可輸出 SAPI PCM WAV；deterministic TTS、baseline 聲紋 provider 與 UDP peer 僅供離線測試，仍不等同 ESP 真機通過。
+
+Windows 啟動時 `IOT_TTS_PROVIDER=windows` 會使用內建 SAPI 產生真正的 PCM WAV；非 Windows 或明確設定其他 provider 時仍可使用 deterministic silence。情緒與風險 Transformers 模型（`IOT_EMOTION_MODEL`、`IOT_RISK_MODEL`）及 sentence-transformers 記憶檢索（`IOT_EMBEDDING_MODEL` 加 `IOT_MEMORY_EMBEDDINGS=1`）都是可選且 lazy 載入，未配置時使用規則與 lexical fallback，不會在啟動或測試時下載模型。`/api/system/status` 會顯示目前 provider 狀態。
 
 RAG 分成三個資料域：核准的 `shared` 共享知識、只在身份 accepted 且同意有效時可讀的 `user:<id>` 個人記憶，以及僅供 Dashboard 的 `analysis` 情緒／風險事件。小智的 LLM 工具呼叫方向與 RAGFlow `POST /api/v1/retrieval` 已以 optional adapter 保留；RAGFlow endpoint、dataset 與 token 必須自行配置，P1 預設不連外。
 
 ## 上游與 ESP 後續
 
 上游版本固定在 commit `6afc54a17def47578a4b3efc4680873689d3168b`。官方 server 預設 WS 8000、OTA/HTTP 8003；MQTT gateway 另用 1883/TCP、8884/UDP、8007/API。ESP 到貨後才啟動 gateway、OTA 和真機聯調，並以區域網 IP 取代 localhost。
+# 長期記憶與語音音色
+
+在使用者詳情頁授予「記憶」權限後，系統會從明確的個人陳述或近期事件建立已批准的長期記憶，例如「最近工作不順利」。下一輪只在話題相關時把最多一條記憶交給 DeepSeek，提示它自然回訪上次話題；撤回權限後私人記憶不再注入對話。
+
+模擬對話頁可選擇系統預設、女聲或男聲。Windows SAPI 不會自帶林志玲或懶洋洋等藝人角色音色；要使用相近音色，需先安裝合法的 SAPI 語音包，再在 `.env` 的 `IOT_TTS_VOICE_FEMALE` 或 `IOT_TTS_VOICE_MALE` 填入系統語音名稱。未安裝時會安全回退到系統預設或瀏覽器語音。

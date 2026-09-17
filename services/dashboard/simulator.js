@@ -1,6 +1,7 @@
 (function () {
   const $ = id => document.getElementById(id);
   let users = [], languages = {}, session, socket, enrollment, preview, previewUrl;
+  const ttsVoice=()=> $("tts-voice")?.value || "";
   let selectedUser = "", saved = 0, recording = false, uploading = false, chatting = false, opening = false;
   let stopRecording, toastTimer, expiryTimer;
   const errors = {no_speech:"音量太小或沒有收到聲音，請靠近麥克風重錄。", too_short:"錄音不足 3 秒，請完整朗讀後重錄。", clipping:"音量過大造成爆音，請離麥克風稍遠。", audio_too_long:"錄音超過 20 秒，請縮短後重錄。", enrollment_expired:"登記已逾時，請取消後重新開始。", user_not_found:"使用者已被刪除，請返回列表。", user_disabled:"使用者已停用。"};
@@ -152,7 +153,7 @@
     if(recording){stopRecording?.();return;}
     if(uploading || chatting || opening) return;
     recording=true; controls(); window.speechSynthesis?.cancel(); $("sample-preview").pause();
-    if(kind==="chat"){screen.begin("pc-"+Date.now()+"-"+Math.random().toString(36).slice(2));screen.setState("idle","正在請求麥克風權限…");}
+    if(kind==="chat"){$("diagnostics").textContent="";screen.begin("pc-"+Date.now()+"-"+Math.random().toString(36).slice(2));screen.setState("idle","正在請求麥克風權限…");}
     const epoch=screen.epoch;
     const button=kind==="enroll"?$("enroll-record"):$("conversation-record");
     button.textContent="■ 停止錄音";
@@ -189,7 +190,7 @@
         if(!transcript.text?.trim())throw Error("沒有辨識到語音，請重試。");
         if(!socket || socket.readyState!==WebSocket.OPEN)throw Error("連線已中斷，請重新整理頁面。");
         $("captions").textContent=transcript.text;$("turn-status").textContent="等待回覆…";
-        socket.send(JSON.stringify({type:"chat",request_id:screen.requestId,text:transcript.text,user_id:identity.user_id,voiceprint_id:identity.template_id,device_id:session.device_id}));
+        socket.send(JSON.stringify({type:"chat",request_id:screen.requestId,text:transcript.text,user_id:identity.user_id,voiceprint_id:identity.template_id,device_id:session.device_id,voice:ttsVoice()}));
       }catch(e){if(screen.epoch!==epoch)return;chatting=false;screen.fail(message(e));$("turn-status").textContent=message(e);toast(message(e));controls();}
     }
   }
@@ -249,6 +250,19 @@
         if(m.type==="turn.started" && screen.requestId!==m.payload?.request_id)return;
         if(m.type!=="turn.started" && m.turn_id && m.turn_id!==screen.turn)return;
         screen.event(m);
+        if(m.type==="tts.segment"){
+          const diagnostic=m.payload?.result?.model;
+          if(diagnostic){
+            const provider=diagnostic.provider||diagnostic.name||diagnostic.status;
+            const confidence=diagnostic.confidence;
+            const emotion=diagnostic.emotion?.provider || "rules";
+            const risk=diagnostic.risk?.provider || "rules";
+            const memory=diagnostic.memory?.provider || "lexical";
+            $("diagnostics").textContent="对话：" + (provider||"未提供") +
+              " · 情绪：" + emotion + " · 风险：" + risk + " · 记忆：" + memory +
+              (confidence==null?"":" · 信心 "+Math.round(confidence*100)+"%");
+          }
+        }
         if(m.type==="turn.failed"){chatting=false;$("turn-status").textContent=m.payload.error;toast(m.payload.error);controls();}
         if(m.type==="tts.end" && chatting){$("turn-status").textContent="回覆已接收，等待本機播放完成…";}
 

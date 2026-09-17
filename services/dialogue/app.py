@@ -37,7 +37,10 @@ from services.audio.worker import AsrWorker, QueueFullError
 from services.device_gateway.events import normalize_heartbeat
 from services.device_gateway.contracts import DeviceEvent as ProtocolEvent
 from services.dialogue.deepseek import DeepSeekClient
-from services.dialogue.pipeline import process_text
+from services.dialogue.pipeline import process_text, emotion_detector_status
+from services.memory.retriever import embedding_provider_status
+from services.memory.schemas import MemoryChunk
+from services.security.consent import has_consent, record_consent
 from services.dialogue.turns import TurnRegistry
 from services.security.auth import _session, create_session, require_admin, require_device, require_csrf, set_session_cookie, SESSION_COOKIE
 from services.security.audit import record_audit
@@ -46,7 +49,7 @@ from services.storage.migrations import migrate
 from services.storage.settings import RuntimeSettings
 from services.users.repository import create_user, delete_user_data, get_user, list_users, update_user
 from services.users.schemas import DeleteConfirmation, ProfileInput, ProfilePatch
-from services.analysis.risk import analyze_local, merge_risk
+from services.analysis.risk import analyze_local, merge_risk, risk_detector_status
 from services.voiceprint.matcher import IdentityResult, identify as identify_voiceprint
 from services.voiceprint.provider import create_voiceprint_provider
 from services.voiceprint.storage import seal, open_sealed
@@ -184,6 +187,61 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 raise HTTPException(status_code=409, detail='user_disabled')
             return user['preferred_language'] if user else 'zh-CN'
 
+    def approved_memories(user_id: str | None, identity) -> list[MemoryChunk]:
+        """Load only current, approved memory visible to this identity.
+
+        Shared chunks are safe for every turn; private chunks additionally
+        require an accepted identity, matching ownership, and memory consent.
+        """
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id,owner_user_id,text,source_id,source_kind,approved,active "
+                "FROM memory_chunks WHERE approved=1 AND active=1 "
+                "AND (owner_user_id IS NULL OR owner_user_id=?)",
+                (user_id,),
+            ).fetchall()
+            consented = bool(
+                user_id
+                and getattr(identity, "decision", None) == "accepted"
+                and getattr(identity, "user_id", None) == user_id
+                and has_consent(conn, user_id, "memory")
+            )
+        chunks = []
+        for row in rows:
+            if row["owner_user_id"] is not None and not consented:
+                continue
+            chunks.append(MemoryChunk(
+                row["chunk_id"], row["owner_user_id"], row["text"],
+                row["source_id"], row["source_kind"],
+                bool(row["approved"]), bool(row["active"]),
+            ))
+        return chunks
+
+    def maybe_store_long_term_memory(req: ChatRequest, emotion: str, identity) -> None:
+        """Store only explicit, useful personal/context signals after memory consent."""
+        if getattr(identity, "decision", None) != "accepted":
+            return
+        with db() as conn:
+            if not has_consent(conn, req.user_id, "memory"):
+                return
+            text = " ".join(req.text.split()).strip()
+            markers = ("我喜歡", "我不喜歡", "我最近", "最近工作", "工作不順", "我在", "我的")
+            if len(text) < 6 or not any(marker in text for marker in markers):
+                return
+            summary = f"使用者曾提到：{text[:500]}（當時情緒：{emotion}）"
+            duplicate = conn.execute(
+                "SELECT 1 FROM memory_chunks WHERE owner_user_id=? AND text=? AND active=1",
+                (req.user_id, summary),
+            ).fetchone()
+            if duplicate:
+                return
+            conn.execute(
+                "INSERT INTO memory_chunks(chunk_id,owner_user_id,text,source_id,source_kind,approved,active,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), req.user_id, summary, "conversation", "conversation-summary", 1, 1, time.time()),
+            )
+            conn.commit()
+
     def save_conversation(req: ChatRequest, reply: str, emotion: str, model: str, latency_ms: int, risk: dict[str, Any] | None = None) -> str:
         conversation_id, now = str(uuid.uuid4()), time.time()
         with db() as conn:
@@ -230,6 +288,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         if request is not None:
             with db() as conn: admin_auth(request, conn, write=True)
         identity = IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator")
+        memories = approved_memories(req.user_id, identity)
         llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
         result = process_text(
             req.text,
@@ -239,11 +298,13 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             session_id=request.headers.get("X-Simulator-Session", "http-chat") if request is not None else "internal-chat",
             llm=llm,
             rag_provider=providers.get("rag"),
+            memories=memories,
             request_id=str(uuid.uuid4()),
         )
         model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
         latency_ms = result.latency_ms["total"]
         conversation_id = save_conversation(req, result.reply, result.emotion, model, latency_ms, result.risk)
+        maybe_store_long_term_memory(req, result.emotion, identity)
         return ChatResponse(conversation_id=conversation_id, user_id=req.user_id, emotion=result.emotion, reply=result.reply, model=model, latency_ms=latency_ms)
 
     @application.post("/api/transcribe")
@@ -421,6 +482,26 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             cur = conn.execute("DELETE FROM memory_chunks WHERE chunk_id=? AND owner_user_id=?", (memory_id, user_id)); conn.commit()
             if cur.rowcount == 0: raise HTTPException(status_code=404, detail="memory_not_found")
             return {"ok": True}
+
+    @application.get("/api/users/{user_id}/memory-consent")
+    def memory_consent(user_id: str, request: Request):
+        with db() as conn:
+            admin_auth(request, conn)
+            if not get_user(conn, user_id):
+                raise HTTPException(status_code=404, detail="user_not_found")
+            return {"user_id": user_id, "purpose": "memory", "granted": has_consent(conn, user_id, "memory")}
+
+    @application.post("/api/users/{user_id}/memory-consent")
+    def update_memory_consent(user_id: str, payload: dict[str, Any], request: Request):
+        with db() as conn:
+            actor = admin_auth(request, conn, write=True)
+            if not get_user(conn, user_id):
+                raise HTTPException(status_code=404, detail="user_not_found")
+            granted = payload.get("granted")
+            if not isinstance(granted, bool):
+                raise HTTPException(status_code=422, detail="granted_boolean_required")
+            record_consent(conn, user_id, "memory", granted, "memory-v1", actor["actor_id"])
+            return {"user_id": user_id, "purpose": "memory", "granted": granted}
 
     @application.post("/api/simulator/sessions")
     def simulator_session(request: Request):
@@ -617,15 +698,17 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "thinking", "emotion": "neutral", "caption": "正在理解…"}).as_dict())
                 req = ChatRequest(user_id=str(message.get("user_id") or "sim-user"), text=text, device_id=device_id, voiceprint_id=message.get("voiceprint_id"))
                 try:
+                    identity = IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator")
                     result = await asyncio.to_thread(process_text,
                         text,
                         user_id=req.user_id,
                         language=user_language(req.user_id),
-                        identity=IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator"),
+                        identity=identity,
                         session_id=session_id,
                         turn_id=turn_id,
                         llm=None if runtime.testing else providers.get("deepseek") or DeepSeekClient(),
                         rag_provider=providers.get("rag"),
+                        memories=approved_memories(req.user_id, identity),
                         request_id=request_id,
                     )
                     model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
@@ -634,7 +717,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     for index, segment in enumerate(result.segments):
                         media_id = None
                         try:
-                            artifact = application.state.tts_provider.synthesize(segment)
+                            artifact = application.state.tts_provider.synthesize(
+                                segment, str(message.get("voice") or "")
+                            )
                             wav_buffer = io.BytesIO()
                             with wave.open(wav_buffer, "wb") as wav_file:
                                 wav_file.setnchannels(artifact.channels); wav_file.setsampwidth(2); wav_file.setframerate(artifact.sample_rate); wav_file.writeframes(artifact.pcm16)
@@ -662,7 +747,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     def system_status(request: Request):
         with db() as conn: require_admin(request, conn)
         asr = application.state.asr_service.snapshot() if hasattr(application.state, "asr_service") else {"status": "unavailable"}
-        return {"status": "ready", "configured": bool(providers), "loading": asr.get("status") == "loading", "degraded": asr.get("status") == "degraded", "error": asr.get("last_error"), "last_test_at": None, "asr": asr}
+        tts = application.state.tts_provider.status() if hasattr(application.state, "tts_provider") and hasattr(application.state.tts_provider, "status") else {"provider": "unknown", "status": "unknown"}
+        return {"status": "ready", "configured": bool(providers), "loading": asr.get("status") == "loading", "degraded": asr.get("status") == "degraded", "error": asr.get("last_error"), "last_test_at": None, "asr": asr, "tts": tts, "emotion": emotion_detector_status(), "risk": risk_detector_status(), "memory": embedding_provider_status()}
 
     @application.post("/api/auth/login")
     def login(req: LoginRequest, request: Request, response: Response):
