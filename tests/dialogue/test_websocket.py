@@ -7,6 +7,7 @@ from services.security.auth import create_session
 from services.storage.database import open_database
 from services.storage.migrations import migrate
 from services.storage.settings import RuntimeSettings
+from services.voiceprint.storage import seal
 
 
 def test_simulator_websocket_emits_turn_subtitle_and_tts_events(tmp_path):
@@ -14,12 +15,18 @@ def test_simulator_websocket_emits_turn_subtitle_and_tts_events(tmp_path):
     with open_database(settings.database_path) as conn:
         migrate(conn)
         token = create_session(conn, "admin", "admin")
+        conn.execute("INSERT INTO users(user_id,display_name,created_at,status) VALUES(?,?,?,?)", ("alice", "Alice", 0, "active"))
+        conn.execute(
+            "INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)",
+            ("template-1", "alice", seal([0.0, 1.0, 0.0]), "pc-baseline-v2", 1, 0),
+        )
+        conn.commit()
     app = create_app(settings, providers={})
 
     with TestClient(app) as client:
         client.cookies.set("iot_session", token)
         with client.websocket_connect("/ws/simulator/session-1") as socket:
-            socket.send_json({"type": "chat", "text": "I feel sad", "user_id": "alice", "device_id": "pc-1"})
+            socket.send_json({"type": "chat", "text": "I feel sad", "user_id": "alice", "voiceprint_id": "template-1", "device_id": "pc-1"})
             events = []
             while not events or events[-1]["type"] != "tts.end":
                 events.append(socket.receive_json())

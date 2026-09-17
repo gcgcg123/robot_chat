@@ -18,7 +18,12 @@ function Write-OwnedProcessState(
     [string]$CommandContains,
     [string]$RunId
 ) {
-    $snapshot = Get-ProcessSnapshot -TargetProcessId $Process.Id
+    $snapshot = $null
+    for ($attempt = 0; $attempt -lt 10 -and -not $snapshot; $attempt++) {
+        if ($Process.HasExited) { break }
+        $snapshot = Get-ProcessSnapshot -TargetProcessId $Process.Id
+        if (-not $snapshot) { Start-Sleep -Milliseconds 200 }
+    }
     if (-not $snapshot) { throw "Unable to inspect the newly started $Role process." }
     $state = [ordered]@{
         pid = $Process.Id
@@ -73,4 +78,3 @@ function Stop-OwnedProcess([string]$StateFile, [string]$ExpectedRole) {
 function Quote-ProcessArgument([string]$Value) {
     return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
 }
-

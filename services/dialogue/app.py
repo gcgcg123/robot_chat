@@ -37,7 +37,10 @@ from services.audio.worker import AsrWorker, QueueFullError
 from services.device_gateway.events import normalize_heartbeat
 from services.device_gateway.contracts import DeviceEvent as ProtocolEvent
 from services.dialogue.deepseek import DeepSeekClient
-from services.dialogue.pipeline import process_text
+from services.dialogue.pipeline import process_text, emotion_detector_status
+from services.memory.retriever import embedding_provider_status
+from services.memory.schemas import MemoryChunk
+from services.security.consent import has_consent, record_consent
 from services.dialogue.turns import TurnRegistry
 from services.security.auth import _session, create_session, require_admin, require_device, require_csrf, set_session_cookie, SESSION_COOKIE
 from services.security.audit import record_audit
@@ -46,9 +49,9 @@ from services.storage.migrations import migrate
 from services.storage.settings import RuntimeSettings
 from services.users.repository import create_user, delete_user_data, get_user, list_users, update_user
 from services.users.schemas import DeleteConfirmation, ProfileInput, ProfilePatch
-from services.analysis.risk import analyze_local, merge_risk
+from services.analysis.risk import analyze_local, merge_risk, risk_detector_status
 from services.voiceprint.matcher import IdentityResult, identify as identify_voiceprint
-from services.voiceprint.provider import VoiceprintProvider
+from services.voiceprint.provider import create_voiceprint_provider
 from services.voiceprint.storage import seal, open_sealed
 from services.enrollment.service import EnrollmentService
 from services.tts.config import create_tts_provider
@@ -156,7 +159,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         application.state.asr_worker = AsrWorker(asr_service, max_queue=int(os.getenv("ASR_MAX_QUEUE", "4")))
         application.state.turn_registry = TurnRegistry()
         application.state.enrollment_service = EnrollmentService()
-        application.state.voiceprint_provider = providers.get("voiceprint") or VoiceprintProvider()
+        application.state.voiceprint_provider = providers.get("voiceprint") or create_voiceprint_provider(runtime.testing)
         application.state.tts_provider = providers.get("tts") or create_tts_provider()
         application.state.media_store = MediaStore(runtime.data_dir / "media")
         yield
@@ -183,6 +186,61 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             if user and user['status'] != 'active':
                 raise HTTPException(status_code=409, detail='user_disabled')
             return user['preferred_language'] if user else 'zh-CN'
+
+    def approved_memories(user_id: str | None, identity) -> list[MemoryChunk]:
+        """Load only current, approved memory visible to this identity.
+
+        Shared chunks are safe for every turn; private chunks additionally
+        require an accepted identity, matching ownership, and memory consent.
+        """
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id,owner_user_id,text,source_id,source_kind,approved,active "
+                "FROM memory_chunks WHERE approved=1 AND active=1 "
+                "AND (owner_user_id IS NULL OR owner_user_id=?)",
+                (user_id,),
+            ).fetchall()
+            consented = bool(
+                user_id
+                and getattr(identity, "decision", None) == "accepted"
+                and getattr(identity, "user_id", None) == user_id
+                and has_consent(conn, user_id, "memory")
+            )
+        chunks = []
+        for row in rows:
+            if row["owner_user_id"] is not None and not consented:
+                continue
+            chunks.append(MemoryChunk(
+                row["chunk_id"], row["owner_user_id"], row["text"],
+                row["source_id"], row["source_kind"],
+                bool(row["approved"]), bool(row["active"]),
+            ))
+        return chunks
+
+    def maybe_store_long_term_memory(req: ChatRequest, emotion: str, identity) -> None:
+        """Store only explicit, useful personal/context signals after memory consent."""
+        if getattr(identity, "decision", None) != "accepted":
+            return
+        with db() as conn:
+            if not has_consent(conn, req.user_id, "memory"):
+                return
+            text = " ".join(req.text.split()).strip()
+            markers = ("我喜歡", "我不喜歡", "我最近", "最近工作", "工作不順", "我在", "我的")
+            if len(text) < 6 or not any(marker in text for marker in markers):
+                return
+            summary = f"使用者曾提到：{text[:500]}（當時情緒：{emotion}）"
+            duplicate = conn.execute(
+                "SELECT 1 FROM memory_chunks WHERE owner_user_id=? AND text=? AND active=1",
+                (req.user_id, summary),
+            ).fetchone()
+            if duplicate:
+                return
+            conn.execute(
+                "INSERT INTO memory_chunks(chunk_id,owner_user_id,text,source_id,source_kind,approved,active,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), req.user_id, summary, "conversation", "conversation-summary", 1, 1, time.time()),
+            )
+            conn.commit()
 
     def save_conversation(req: ChatRequest, reply: str, emotion: str, model: str, latency_ms: int, risk: dict[str, Any] | None = None) -> str:
         conversation_id, now = str(uuid.uuid4()), time.time()
@@ -230,6 +288,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         if request is not None:
             with db() as conn: admin_auth(request, conn, write=True)
         identity = IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator")
+        memories = approved_memories(req.user_id, identity)
         llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
         result = process_text(
             req.text,
@@ -239,11 +298,13 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             session_id=request.headers.get("X-Simulator-Session", "http-chat") if request is not None else "internal-chat",
             llm=llm,
             rag_provider=providers.get("rag"),
+            memories=memories,
             request_id=str(uuid.uuid4()),
         )
         model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
         latency_ms = result.latency_ms["total"]
         conversation_id = save_conversation(req, result.reply, result.emotion, model, latency_ms, result.risk)
+        maybe_store_long_term_memory(req, result.emotion, identity)
         return ChatResponse(conversation_id=conversation_id, user_id=req.user_id, emotion=result.emotion, reply=result.reply, model=model, latency_ms=latency_ms)
 
     @application.post("/api/transcribe")
@@ -311,6 +372,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             admin_auth(request, conn)
             try:
                 return analytics_overview(conn, days)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -328,6 +391,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             admin_auth(request, conn, write=True)
             try:
                 item = review_risk_event(conn, risk_id, payload.review_status)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             if item is None:
@@ -418,6 +483,26 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             if cur.rowcount == 0: raise HTTPException(status_code=404, detail="memory_not_found")
             return {"ok": True}
 
+    @application.get("/api/users/{user_id}/memory-consent")
+    def memory_consent(user_id: str, request: Request):
+        with db() as conn:
+            admin_auth(request, conn)
+            if not get_user(conn, user_id):
+                raise HTTPException(status_code=404, detail="user_not_found")
+            return {"user_id": user_id, "purpose": "memory", "granted": has_consent(conn, user_id, "memory")}
+
+    @application.post("/api/users/{user_id}/memory-consent")
+    def update_memory_consent(user_id: str, payload: dict[str, Any], request: Request):
+        with db() as conn:
+            actor = admin_auth(request, conn, write=True)
+            if not get_user(conn, user_id):
+                raise HTTPException(status_code=404, detail="user_not_found")
+            granted = payload.get("granted")
+            if not isinstance(granted, bool):
+                raise HTTPException(status_code=422, detail="granted_boolean_required")
+            record_consent(conn, user_id, "memory", granted, "memory-v1", actor["actor_id"])
+            return {"user_id": user_id, "purpose": "memory", "granted": granted}
+
     @application.post("/api/simulator/sessions")
     def simulator_session(request: Request):
         with db() as conn: admin_auth(request, conn, write=True)
@@ -484,38 +569,67 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             application.state.enrollment_service.collecting(enrollment_id)
             vectors = [application.state.voiceprint_provider.embed(sample) for sample in item.samples]
             embedding = [sum(values) / len(values) for values in zip(*vectors)]
+            norm = sum(value * value for value in embedding) ** 0.5
+            if norm <= 1e-12:
+                raise ValueError("empty_embedding")
+            embedding = [value / norm for value in embedding]
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        template_id = str(uuid.uuid4()); now = time.time()
+        now = time.time()
+        template_ids = [str(uuid.uuid4()) for _ in vectors]
         with db() as conn:
             user = get_user(conn, item.user_id)
             if not user: raise HTTPException(status_code=404, detail='user_not_found')
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
-            conn.execute("UPDATE voiceprint_templates SET active=0 WHERE user_id=?", (item.user_id,))
             conn.execute('UPDATE users SET enrollment_language=? WHERE user_id=?', (item.language, item.user_id))
-            conn.execute("INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)", (template_id, item.user_id, seal(embedding), "pc-baseline-v2", 1, now))
+            provider = application.state.voiceprint_provider
+            for template_id, vector in zip(template_ids, vectors):
+                conn.execute(
+                    "INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)",
+                    (template_id, item.user_id, seal(vector), provider.model_version, 1, now),
+                )
             conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(item.samples), "template_id": template_id})
         item.state = "completed"; item.samples.clear()
-        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_id, "model_version": "pc-baseline-v2"}
+        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_ids[0], "template_ids": template_ids, "model_version": provider.model_version}
         return item.result
 
     @application.post("/api/voiceprint/identify")
     async def identify_voice(request: Request, file: UploadFile = File(...)):
-        with db() as conn: admin_auth(request, conn, write=True)
+        with db() as conn: actor = admin_auth(request, conn, write=True)
         sample = await file.read()
         if not sample: raise HTTPException(status_code=422, detail="empty_audio")
         try:
             normalized = normalize_audio(sample, file.content_type or '')
             vector = application.state.voiceprint_provider.embed(normalized.pcm16)
             with db() as conn:
-                rows = conn.execute("SELECT t.template_id,t.user_id,t.embedding_json,t.active FROM voiceprint_templates t JOIN users u ON u.user_id=t.user_id WHERE t.active=1 AND u.status='active' AND t.model_version='pc-baseline-v2'").fetchall()
+                model_version = application.state.voiceprint_provider.model_version
+                rows = conn.execute("SELECT t.template_id,t.user_id,t.embedding_json,t.active FROM voiceprint_templates t JOIN users u ON u.user_id=t.user_id WHERE t.active=1 AND u.status='active' AND t.model_version=?", (model_version,)).fetchall()
             templates = []
             for row in rows:
                 try: values = open_sealed(row["embedding_json"])
                 except (ValueError, TypeError): continue
                 templates.append({"template_id": row["template_id"], "user_id": row["user_id"], "embedding": values, "active": bool(row["active"])})
-            result = identify_voiceprint(vector, templates)
+            result = identify_voiceprint(vector, templates, provider=model_version)
+            with db() as conn:
+                record_audit(
+                    conn,
+                    actor,
+                    "voiceprint_identification",
+                    target_type="user",
+                    target_id=result.user_id,
+                    metadata={
+                        "decision": result.decision,
+                        "best_score": round(result.best_score, 6),
+                        "second_score": round(result.second_score, 6) if result.second_score is not None else None,
+                        "template_id": result.template_id,
+                        "provider": result.provider,
+                    },
+                )
             return {"decision": result.decision, "user_id": result.user_id, "best_score": result.best_score, "second_score": result.second_score, "template_id": result.template_id, "provider": result.provider}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -565,20 +679,36 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     await websocket.send_json(ProtocolEvent("pc-sim", session_id, "", "turn.failed", {"error": str(exc)}).as_dict())
                     continue
                 device_id = str(message.get("device_id") or "pc-sim")
+                requested_user_id = str(message.get("user_id") or "")
+                requested_template_id = str(message.get("voiceprint_id") or "")
+                provider_version = application.state.voiceprint_provider.model_version
+                with db() as conn:
+                    verified = conn.execute(
+                        "SELECT 1 FROM voiceprint_templates t JOIN users u ON u.user_id=t.user_id "
+                        "WHERE t.template_id=? AND t.user_id=? AND t.active=1 "
+                        "AND t.model_version=? AND u.status='active'",
+                        (requested_template_id, requested_user_id, provider_version),
+                    ).fetchone()
+                if not verified:
+                    await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "turn.failed", {"error": "voiceprint_required"}).as_dict())
+                    registry.cancel(turn_id)
+                    continue
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "turn.started", {"request_id": request_id}).as_dict())
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "stt.final", {"text": text}).as_dict())
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "thinking", "emotion": "neutral", "caption": "正在理解…"}).as_dict())
                 req = ChatRequest(user_id=str(message.get("user_id") or "sim-user"), text=text, device_id=device_id, voiceprint_id=message.get("voiceprint_id"))
                 try:
+                    identity = IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator")
                     result = await asyncio.to_thread(process_text,
                         text,
                         user_id=req.user_id,
                         language=user_language(req.user_id),
-                        identity=IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator"),
+                        identity=identity,
                         session_id=session_id,
                         turn_id=turn_id,
                         llm=None if runtime.testing else providers.get("deepseek") or DeepSeekClient(),
                         rag_provider=providers.get("rag"),
+                        memories=approved_memories(req.user_id, identity),
                         request_id=request_id,
                     )
                     model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
@@ -587,7 +717,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     for index, segment in enumerate(result.segments):
                         media_id = None
                         try:
-                            artifact = application.state.tts_provider.synthesize(segment)
+                            artifact = application.state.tts_provider.synthesize(
+                                segment, str(message.get("voice") or "")
+                            )
                             wav_buffer = io.BytesIO()
                             with wave.open(wav_buffer, "wb") as wav_file:
                                 wav_file.setnchannels(artifact.channels); wav_file.setsampwidth(2); wav_file.setframerate(artifact.sample_rate); wav_file.writeframes(artifact.pcm16)
@@ -615,7 +747,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     def system_status(request: Request):
         with db() as conn: require_admin(request, conn)
         asr = application.state.asr_service.snapshot() if hasattr(application.state, "asr_service") else {"status": "unavailable"}
-        return {"status": "ready", "configured": bool(providers), "loading": asr.get("status") == "loading", "degraded": asr.get("status") == "degraded", "error": asr.get("last_error"), "last_test_at": None, "asr": asr}
+        tts = application.state.tts_provider.status() if hasattr(application.state, "tts_provider") and hasattr(application.state.tts_provider, "status") else {"provider": "unknown", "status": "unknown"}
+        return {"status": "ready", "configured": bool(providers), "loading": asr.get("status") == "loading", "degraded": asr.get("status") == "degraded", "error": asr.get("last_error"), "last_test_at": None, "asr": asr, "tts": tts, "emotion": emotion_detector_status(), "risk": risk_detector_status(), "memory": embedding_provider_status()}
 
     @application.post("/api/auth/login")
     def login(req: LoginRequest, request: Request, response: Response):

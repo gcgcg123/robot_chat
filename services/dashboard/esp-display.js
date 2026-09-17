@@ -28,12 +28,13 @@
     reset(state="idle",caption=""){
       this.epoch++;this.clear(this.hold);this.cancel?.();this.cancel=null;
       this.queue=[];this.active=false;this.done=false;this.completed=false;this.turn=null;this.seen=new Set();
-      this.model={state,caption,transcript:"",userText:"",expression:"neutral",emotion:"neutral",risk:"none",level:0,progress:0,segment:0,mode:"",revealed:0,changedAt:this.now()};
+      this.model={state,caption,transcript:"",userText:"",user:"未錄入",expression:"neutral",emotion:"neutral",risk:"none",level:0,progress:0,segment:0,mode:"",revealed:0,changedAt:this.now()};
       this.emit();
     }
     begin(requestId){this.reset();this.requestId=requestId;}
     emit(){this.onChange(this.model);}
     setLevel(level){this.model.level=Math.max(0,Math.min(1,level));}
+    setUser(user){this.model.user=user||"未錄入";this.emit();}
     setState(state,caption){
       this.model.state=state;this.model.level=0;
       if(caption!==undefined)this.model.caption=caption;
@@ -92,7 +93,7 @@
         tick:count=>reveal(count),
         end:()=>{if(!valid())return;reveal(p.text.length);this.active=false;this.cancel=null;this.pump();this.finish();},
         error:()=>{if(valid()){this.model.mode="播放失敗 · 字幕預覽";this.emit();}}
-      });
+      },p.media_url);
     }
     finish(){
       if(!this.done || this.active || this.queue.length || this.completed)return;
@@ -104,8 +105,8 @@
   function createSpeechPlayer(options){
     const now=options.now||(()=>Date.now()), every=options.setInterval||setInterval, stop=options.clearInterval||clearInterval;
     const later=options.setTimeout||setTimeout, clear=options.clearTimeout||clearTimeout;
-    return (text,language,hooks)=>{
-      let ended=false,started=false,audio=false,boundaries=false,timer,watchdog,startAt=now(),u;
+    return (text,language,hooks,mediaUrl)=>{
+      let ended=false,started=false,audio=false,boundaries=false,timer,watchdog,startAt=now(),u,media;
       const cleanup=()=>{stop(timer);clear(watchdog);};
       const end=()=>{if(ended)return;ended=true;cleanup();hooks.end();};
       // Code-point offsets preserve surrogate pairs when revealing emoji.
@@ -121,6 +122,29 @@
         if(u){u.onstart=u.onboundary=u.onend=u.onerror=null;options.speech?.cancel();}
         hooks.start(false);hooks.error();timer=every(animate,50);
       };
+      const fallbackSpeech=()=>{
+        const voice=options.voiceFor(language);
+        if(!voice || !options.speech || !options.Utterance){preview();return;}
+        u=new options.Utterance(text);u.voice=voice;u.lang=voice.lang;
+        u.onstart=()=>{if(ended||started)return;started=true;audio=true;startAt=now();hooks.start(true);timer=every(animate,50);};
+        u.onboundary=e=>{if(ended)return;boundaries=true;hooks.boundary(Math.min(text.length,e.charIndex+(e.charLength||1)));};
+        u.onend=end;u.onerror=preview;
+        try{options.speech.speak(u);}catch(_){preview();}
+      };
+      if(mediaUrl){
+        const AudioCtor=options.Audio||globalThis.Audio;
+        if(AudioCtor){
+          try{
+            media=new AudioCtor(mediaUrl);media.preload="auto";
+            media.onplay=()=>{if(ended||started)return;started=true;audio=true;startAt=now();hooks.start(true);timer=every(animate,50);};
+            media.ontimeupdate=()=>{if(ended||!audio||!media.duration)return;hooks.tick(Math.min(text.length,Math.floor(media.currentTime/media.duration*text.length)));};
+            media.onended=end;
+            media.onerror=()=>{if(!ended){media.onplay=media.ontimeupdate=media.onended=media.onerror=null;cleanup();started=false;audio=false;fallbackSpeech();}};
+            try{const result=media.play();if(result?.catch)result.catch(()=>media.onerror());}catch(_){media.onerror();}
+          }catch(_){fallbackSpeech();}
+        }else fallbackSpeech();
+        return ()=>{ended=true;cleanup();if(media){media.onplay=media.ontimeupdate=media.onended=media.onerror=null;media.pause?.();media.src="";}if(u){u.onstart=u.onboundary=u.onend=u.onerror=null;options.speech?.cancel();}};
+      }
       const voice=options.voiceFor(language);
       if(!voice || !options.speech || !options.Utterance){
         started=true;hooks.start(false);timer=every(animate,50);
@@ -182,12 +206,14 @@
       c.fillText(labels[m.state]||m.state,12,142);
       if(m.expression==="comfort" && m.state!=="speaking"){c.textAlign="right";c.fillStyle=color;c.fillText("慢慢來，我在",308,142);}
       c.fillStyle="#203440";c.fillRect(8,152,304,70);
+      c.fillStyle="#b8d8d5";c.font="10px system-ui";c.textAlign="left";
+      c.fillText("聲紋使用者：" + m.user,16,166);
       c.font="14px system-ui";c.fillStyle="#f3f7f9";c.textAlign="left";
       const lines=wrapText(m.caption,text=>c.measureText(text).width,280);
       // Rolling viewport: all long STT lines cycle; speech follows revealed text.
       const max=Math.max(0,lines.length-3);
       const start=m.state==="speaking"||m.state==="idle"?max:Math.floor(Math.max(0,Date.now()-m.changedAt)/2200)%(max+1);
-      lines.slice(start,start+3).forEach((text,i)=>c.fillText(text,16,169+i*20));
+      lines.slice(start,start+2).forEach((text,i)=>c.fillText(text,16,184+i*20));
       c.fillStyle="#a7bfcb";c.font="9px system-ui";
       c.fillText(lines.length>3?"行 "+(start+1)+"–"+Math.min(start+3,lines.length)+" / "+lines.length:"",12,235);
       c.textAlign="right";c.fillText(m.segment?"SEG "+m.segment+" · "+Math.round(m.progress*100)+"%":"2.4″ · 邏輯預覽",308,235);
