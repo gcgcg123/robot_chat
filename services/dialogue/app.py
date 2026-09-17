@@ -225,7 +225,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             if not has_consent(conn, req.user_id, "memory"):
                 return
             text = " ".join(req.text.split()).strip()
-            markers = ("我喜歡", "我不喜歡", "我最近", "最近工作", "工作不順", "我在", "我的")
+            markers = (
+                "我喜歡", "我喜欢", "我不喜歡", "我不喜欢", "我最近",
+                "我最近", "最近工作", "工作不順", "工作不顺", "我在", "我的",
+            )
             if len(text) < 6 or not any(marker in text for marker in markers):
                 return
             summary = f"使用者曾提到：{text[:500]}（當時情緒：{emotion}）"
@@ -713,6 +716,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     )
                     model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
                     conversation_id = save_conversation(req, result.reply, result.emotion, model, result.latency_ms["total"], result.risk)
+                    maybe_store_long_term_memory(req, result.emotion, identity)
                     result_payload = result.as_dict() | {"conversation_id": conversation_id}
                     for index, segment in enumerate(result.segments):
                         media_id = None

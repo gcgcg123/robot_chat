@@ -89,3 +89,23 @@ def test_enabled_rag_provider_is_labelled_as_untrusted_context():
     )
     assert result.citations == ["doc-1"]
     assert "不可信參考" in seen["content"]
+
+
+def test_role_prompt_is_system_message_before_user_message():
+    seen = {}
+
+    class CaptureLlm:
+        def reply(self, messages, request_id=""):
+            seen["messages"] = messages
+            return {"status": "ok", "text": "好的", "model": "test", "usage": {}, "request_id": request_id}
+
+    process_text(
+        "請陪我聊聊",
+        user_id="alice",
+        identity=IdentityResult("accepted", "alice", 0.9, 0.2, "vp", "test"),
+        session_id="s-role",
+        llm=CaptureLlm(),
+    )
+    assert seen["messages"][0]["role"] == "system"
+    assert "老年人之友" in seen["messages"][0]["content"]
+    assert seen["messages"][1]["role"] == "user"
