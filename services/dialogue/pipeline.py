@@ -23,6 +23,17 @@ def emotion_detector_status() -> dict:
 
 def detect_emotion(text: str) -> str:
     global _emotion_model, _emotion_error
+    lowered = text.lower()
+    negative_tokens = (
+        "難過", "伤心", "傷心", "心情不好", "心情不太好", "焦慮", "焦虑",
+        "壓力", "压力", "生氣", "生气", "討厭", "讨厌", "抑鬱", "抑郁",
+        "恐慌", "panic", "sad", "angry", "anxious", "depressed",
+    )
+    positive_tokens = ("開心", "开心", "高興", "高兴", "謝謝", "谢谢", "棒", "喜歡", "喜欢", "happy", "great")
+    # Safety-first lexical cues override a coarse sentiment model. Questions
+    # such as "am I depressed?" still contain a clear distress signal.
+    if any(token in lowered for token in negative_tokens):
+        return "negative"
     model_name = os.getenv("IOT_EMOTION_MODEL", "").strip()
     if model_name and _emotion_error is None:
         try:
@@ -34,10 +45,7 @@ def detect_emotion(text: str) -> str:
             if any(x in label for x in ("negative", "sad", "anger", "angry", "fear", "disgust", "star 1", "star 2")): return "negative"
         except Exception as exc:
             _emotion_error = str(exc)
-    lowered = text.lower()
-    if any(token in lowered for token in ("難過", "傷心", "心情不好", "心情不太好", "焦慮", "壓力", "生氣", "討厭", "sad", "angry")):
-        return "negative"
-    if any(token in lowered for token in ("開心", "高興", "謝謝", "棒", "喜歡", "happy", "great")):
+    if any(token in lowered for token in positive_tokens):
         return "positive"
     return "neutral"
 
