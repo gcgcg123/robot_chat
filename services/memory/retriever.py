@@ -104,6 +104,45 @@ def rank_chunks(
     return sorted(scored, key=lambda item: item[0], reverse=True)
 
 
+# A turn can carry several questions. Both terminal punctuation and commas separate
+# them: this project is driven by speech, and ASR renders a spoken pause as a comma,
+# so "我喜欢吃什么，我会哪些东西？" is two questions, not one clause.
+_QUERY_SPLIT = re.compile(r"[？?！!。；;，,\n\r]+")
+MAX_SUB_QUERIES = 8
+
+
+def split_queries(text: str, *, limit: int = MAX_SUB_QUERIES) -> list[str]:
+    """Split a turn into the individual questions it asks.
+
+    The unit of retrieval is the question, not the turn, so callers score each part
+    on its own.  Scoring a message as one vector averages its topics together and
+    drags every memory's similarity down.  Measured on two reported incidents:
+
+    * "我成年了吗？我叫什么名字？我喜欢吃什么？" -- the age memory scores 0.7172
+      against "我成年了吗？" alone (over the 0.68 floor) but 0.5898 against the whole
+      message, so the robot said it had no record of the user's age;
+    * "我叫什么名字？我成年了吗？我喜欢吃什么，我会哪些东西？" -- the comma kept
+      the last two questions in one segment, where the skill memory scored 0.6066
+      against "我喜欢吃什么，我会哪些东西" while the food memory scored 0.9047.  The
+      per-question budget then took only the winner, so the skill question was never
+      answered.  Split apart: 0.969 for the food question and 0.723 for the skill one.
+
+    When a turn has more than ``limit`` questions the tail is joined into one final
+    candidate rather than dropped, so no question disappears silently.
+    """
+
+    parts = [" ".join(part.split()) for part in _QUERY_SPLIT.split(text or "")]
+    parts = [part for part in parts if part]
+    if not parts:
+        # Punctuation-only input carries no question at all; anything else is one
+        # question that simply had no terminal mark.
+        collapsed = " ".join((text or "").split())
+        return [collapsed] if re.search(r"\w", collapsed) else []
+    if len(parts) > limit:
+        return parts[: limit - 1] + ["，".join(parts[limit - 1:])]
+    return parts
+
+
 def select_relevant(
     chunks: Iterable[MemoryChunk],
     query: str,

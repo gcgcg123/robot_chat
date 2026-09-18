@@ -38,7 +38,13 @@ class MemorySettings:
     hit_bonus: float = 0.5
     default_importance: float = 0.5
     relevance_floor: float = 0.68
-    inject_top_n: int = 4
+    # Safety cap on how many memories one turn may inject (basic keys are extra).
+    # Every memory that clears the floor is relevant to some question the user asked,
+    # so this is only a guard rail against a request that matches a large part of a
+    # long-lived account's memory -- not a ranking cut. When it does bite, the
+    # highest-scoring memories are kept.
+    inject_top_n: int = 12
+    # How many basic keys (name, ...) may be injected unconditionally.
     slot_top_n: int = 4
     auto_extract: bool = True
     max_candidates_per_turn: int = 3
@@ -59,6 +65,18 @@ class MemorySettings:
     # therefore only merges near-identical probes; the paraphrases it misses are
     # the reason the extractor is also asked to reuse keys. > 1.0 disables merging.
     merge_similarity: float = 0.90
+    # A matching key or probe only makes a row a *candidate* for merging. Whether the
+    # two rows really are the same fact is decided by the similarity of their
+    # statements, because a key is often a category rather than a fact: "我學會了
+    # 唱跳rap籃球" and "我學會了寫歌詞" share the key `skill` and the probe
+    # "我最近學會了什麼？", so key and probe both say "same" while the statements are
+    # plainly two different skills. Calibration on statement embeddings:
+    #   same fact restated    0.8234 .. 0.9738
+    #   different fact        0.4479 .. 0.7646
+    # 0.80 sits between them (lexical bigrams overlap and cannot be used here).
+    # Single-valued keys (see SINGLE_VALUED_SLOT_KEYS) bypass this, so a correction
+    # like "我不叫X，我叫Y" still replaces the old value.
+    statement_merge_similarity: float = 0.80
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "MemorySettings":
@@ -82,11 +100,12 @@ class MemorySettings:
             half_life_days=number("IOT_MEMORY_HALF_LIFE_DAYS", 14.0),
             hit_bonus=number("IOT_MEMORY_HIT_BONUS", 0.5),
             relevance_floor=number("IOT_MEMORY_RELEVANCE_FLOOR", 0.68),
-            inject_top_n=integer("IOT_MEMORY_INJECT_TOP_N", 4),
+            inject_top_n=integer("IOT_MEMORY_INJECT_TOP_N", 12),
             slot_top_n=integer("IOT_MEMORY_SLOT_TOP_N", 4),
             auto_extract=str(source.get("IOT_MEMORY_AUTO_EXTRACT", "1")).strip().lower() in _TRUTHY,
             max_candidates_per_turn=integer("IOT_MEMORY_MAX_CANDIDATES", 3),
             merge_similarity=number("IOT_MEMORY_MERGE_SIMILARITY", 0.90),
+            statement_merge_similarity=number("IOT_MEMORY_STATEMENT_MERGE_SIMILARITY", 0.80),
         )
 
 

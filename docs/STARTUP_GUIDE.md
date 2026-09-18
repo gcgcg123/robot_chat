@@ -137,7 +137,7 @@ configs\launcher.json
   "heartbeat_interval_seconds": 10,
   "simulator_device_id": "sim-device",
   "deepseek_base_url": "https://api.deepseek.com",
-  "deepseek_model": "deepseek-chat"
+  "deepseek_model": "deepseek-flash"
 }
 ```
 

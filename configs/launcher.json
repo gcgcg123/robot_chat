@@ -7,7 +7,7 @@
   "simulator_device_id": "sim-device",
   "python": "",
   "deepseek_base_url": "https://api.deepseek.com",
-  "deepseek_model": "deepseek-chat",
+  "deepseek_model": "deepseek-flash",
   "asr_provider": "sensevoice",
   "asr_sensevoice_model_path": "./models/asr/sensevoice-small",
   "asr_whisper_model_path": "./models/asr/whisper-large-v3-turbo-ct2",

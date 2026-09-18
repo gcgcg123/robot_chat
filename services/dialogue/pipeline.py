@@ -80,10 +80,12 @@ def process_text(
         'emotion 表示使用者本輪情緒；risk 表示風險等級，無風險填 none；'
         'risk_evidence 列出你判斷為風險或需人工留意的關鍵短語。'
         'remember 只放「值得長期記住」的資訊（姓名或稱呼、居住地、家人寵物、喜好與忌諱、'
-        '長期目標、重要經歷），不要放寒暄、一次性問答或你對情緒的推測。'
+        '技能或擅長的事、最近學會或改變了什麼、長期目標、重要經歷），不要放寒暄、一次性問答或你對情緒的推測。'
         '每項的 text 是陳述句，probe 是「使用者日後會用什麼問句來問這件事」的問句，'
         'key 是穩定的英文短標識（例如 name／home／pet／preference），同一件事重複提到要用同一個 key。'
         'quote 填使用者本輪的原話（必須逐字照抄）；若這是你推斷而非使用者明說的，就不要填 quote。'
+        '若使用者更正先前說過的資訊（改名、否認、改成別的），要用同一個 key 提出更正後的新內容，'
+        'quote 填他更正的那句原話——這樣舊資料才會被就地更新，而不是留下兩筆矛盾的記憶。'
         'importance 為 0~1。沒有值得記住的內容時 remember 填 []。'
     )
     user_content = normalized
@@ -132,9 +134,18 @@ def process_text(
     risk["requires_human_review"] = risk["risk_level"] != "none"
 
     total_ms = int((time.perf_counter() - started) * 1000)
+    raw_remember = response.get("remember")
     memory_candidates = normalize_candidates(
-        response.get("remember"), normalized, settings=memory_settings
+        raw_remember, normalized, settings=memory_settings
     )
+    # A proposal that the validator drops is a memory lost in silence, and a turn
+    # where the model proposed nothing at all leaves no trace either -- which is how
+    # "it forgot what I just told it" stayed undiagnosable. Say so when the counts
+    # disagree, so the service log tells the two cases apart.
+    proposed = len(raw_remember) if isinstance(raw_remember, list) else (1 if raw_remember else 0)
+    if proposed != len(memory_candidates):
+        print(f"[memory] model proposed {proposed} item(s), kept {len(memory_candidates)} "
+              f"request_id={request_id}", flush=True)
     return DialogueResult(
         turn_id=turn_value,
         session_id=session_id,
@@ -150,6 +161,7 @@ def process_text(
         model={
             "status": response.get("status", "unavailable"),
             "name": response.get("model", "none"),
+            "served_model": response.get("served_model", ""),
             "usage": response.get("usage", {}),
             "request_id": response.get("request_id", request_id),
         },

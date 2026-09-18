@@ -84,7 +84,7 @@ def fallback_reply(text: str, emotion: str) -> str:
 def deepseek_reply(text: str, emotion: str) -> tuple[str, str]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
-    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
     if not api_key: return fallback_reply(text, emotion), "fallback-no-key"
     payload = {"model": model, "temperature": 0.6, "messages": [{"role": "system", "content": "你是溫和、簡潔、非醫療診斷的情感陪伴機器人。用繁體中文回答，先同理再提供一個可執行的小建議。"}, {"role": "user", "content": f"情緒標籤：{emotion}\n使用者訊息：{text}"}]}
     try:
@@ -188,7 +188,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 raise HTTPException(status_code=409, detail='user_disabled')
             return user['preferred_language'] if user else 'zh-CN'
 
-    def save_conversation(req: ChatRequest, reply: str, emotion: str, model: str, latency_ms: int, risk: dict[str, Any] | None = None) -> str:
+    def save_conversation(req: ChatRequest, reply: str, emotion: str, model: str, latency_ms: int, risk: dict[str, Any] | None = None, llm_status: str = "", served_model: str = "") -> str:
         conversation_id, now = str(uuid.uuid4()), time.time()
         with db() as conn:
             if conn.execute('SELECT 1 FROM deleted_users WHERE user_id=?', (req.user_id,)).fetchone():
@@ -196,7 +196,11 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             user = get_user(conn, req.user_id)
             if user and user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
             conn.execute("INSERT OR IGNORE INTO users(user_id,display_name,created_at) VALUES(?,?,?)", (req.user_id, req.user_id, now))
-            conn.execute("INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?)", (conversation_id, req.user_id, req.text, reply, emotion, now, json.dumps({"device_id": req.device_id, "voiceprint_id": req.voiceprint_id, "model": model, "latency_ms": latency_ms}, ensure_ascii=False)))
+            # llm_status records why a reply was degraded (timeout/network_error/...).
+            # Without it a canned answer is indistinguishable from a real one in the
+            # history, which is exactly how a silent fallback hides a broken turn.
+            # served_model differs from model when the endpoint normalises the name.
+            conn.execute("INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?)", (conversation_id, req.user_id, req.text, reply, emotion, now, json.dumps({"device_id": req.device_id, "voiceprint_id": req.voiceprint_id, "model": model, "served_model": served_model, "latency_ms": latency_ms, "llm_status": llm_status}, ensure_ascii=False)))
             conn.execute("INSERT INTO emotion_events(conversation_id,user_id,emotion,created_at) VALUES(?,?,?,?)", (conversation_id, req.user_id, emotion, now))
             conn.execute("INSERT OR REPLACE INTO conversation_analysis(conversation_id,user_id,device_id,model,latency_ms,created_at) VALUES(?,?,?,?,?,?)", (conversation_id, req.user_id, req.device_id, model, latency_ms, now))
             if risk and risk.get("risk_level") in {"attention", "urgent"}:
@@ -244,7 +248,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 user_id=req.user_id,
                 query=req.text,
                 identity=identity,
-                embedder=embedding_provider.embed_query if embedding_provider.available else None,
+                embedder=embedding_provider.embed_queries if embedding_provider.available else None,
                 settings=settings,
             )
             memories = recall.selected
@@ -263,7 +267,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         )
         model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
         latency_ms = result.latency_ms["total"]
-        conversation_id = save_conversation(req, result.reply, result.emotion, model, latency_ms, result.risk)
+        conversation_id = save_conversation(req, result.reply, result.emotion, model, latency_ms, result.risk, llm_status=str(result.model.get("status") or ""), served_model=str(result.model.get("served_model") or ""))
         # Close the flywheel: reward what was used, store what the model proposed.
         # Bookkeeping must never cost the user their reply, so a failure here is
         # reported and dropped rather than turned into a 500.
@@ -275,6 +279,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     used_chunk_ids=recall.chunk_ids,
                     candidates=result.memory_candidates,
                     embedder=embedding_provider.embed_queries if embedding_provider.available else None,
+                    statement_embedder=embedding_provider.embed_documents if embedding_provider.available else None,
                     settings=settings,
                 )
             except Exception as exc:
@@ -506,7 +511,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 conn, user_id=user_id, text=text_value, probe=probe, slot_key=slot_key,
                 importance=importance, approved=bool(payload.get("approved", True)),
                 source_id=str(payload.get("source_id", "manual"))[:128], source_kind="manual",
-                embedding=vector, settings=memory_config,
+                embedding=vector,
+                statement_embedder=embedding_provider.embed_documents if embedding_provider.available else None,
+                settings=memory_config,
             )
             evaluate_tiers(conn, user_id, settings=memory_config)
             record_audit(conn, actor, "add_memory", target_type="user", target_id=user_id,
@@ -846,7 +853,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         user_id=req.user_id,
                         query=text,
                         identity=identity,
-                        embedder=embedding_provider.embed_query if embedding_provider.available else None,
+                        embedder=embedding_provider.embed_queries if embedding_provider.available else None,
                         settings=memory_config,
                     )
                 try:
@@ -864,7 +871,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         memory_settings=memory_config,
                     )
                     model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
-                    conversation_id = save_conversation(req, result.reply, result.emotion, model, result.latency_ms["total"], result.risk)
+                    conversation_id = save_conversation(req, result.reply, result.emotion, model, result.latency_ms["total"], result.risk, llm_status=str(result.model.get("status") or ""), served_model=str(result.model.get("served_model") or ""))
                     with db() as conn:
                         try:
                             apply_turn(
@@ -873,6 +880,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                                 used_chunk_ids=recall.chunk_ids,
                                 candidates=result.memory_candidates,
                                 embedder=embedding_provider.embed_queries if embedding_provider.available else None,
+                    statement_embedder=embedding_provider.embed_documents if embedding_provider.available else None,
                                 settings=memory_config,
                             )
                         except Exception as exc:
