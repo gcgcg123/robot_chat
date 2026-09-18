@@ -17,6 +17,28 @@
 
 **相依關係**：A1 → 其餘所有驗證；A2 → 一鍵啟動相關驗收；C1 → D1（聲紋鏈路必須先有可信的金鑰/信封）；D1 → D2；B/C 與 D 可並行。
 
+## 執行狀態（後續更新）
+
+本節由後續工作補記，任務編號與上文一致。
+
+| 任務 | 狀態 | 說明 |
+|---|---|---|
+| A1 補齊開發依賴 | **未完成** | `pytest` 仍未列入 `requirements.txt`，也沒有 `requirements-dev.txt`；CI 的 `pytest` 步驟在乾淨環境仍會失敗。 |
+| A2 啟動腳本去硬編碼 | **已完成** | `scripts/launcher-common.ps1` 新增 `Resolve-ProjectPython`（`IOT_PYTHON` → `configs/launcher.json` 的 `python` → `.venv` → PATH），5 個腳本全部改用它，硬編碼路徑已清除；`configs/launcher.json` 新增 `python` 欄位。 |
+| A3 文件同步 | **大致完成** | 已修 `README.md`、`docs/STARTUP_GUIDE.md`、`docs/GIT_WORKFLOW.md`、`docs/IMPLEMENTATION_STATUS.md`、`models/README.md`；`docs/superpowers/**` 的日期化規劃已加「歷史文件」標註而非改寫。 |
+| B1 Dashboard 裝置欄位 | 未完成 | `dashboard.js` 仍讀 `d.firmware_version` / `d.status_label`。 |
+| B2 首頁時間窗標籤 | 未完成 | 標籤與 `read_model` 的全時段統計仍不符。 |
+| B3 清除 `app.py` 死碼 | 未完成 | `detect_emotion` / `fallback_reply` / `deepseek_reply` 仍在。 |
+| B4 登入常數時間比較 | 未完成 | `app.py` 仍用 `!=` 比較密碼。 |
+| B5 心跳忽略系統代理 | **已完成** | `simulator/heartbeat.py` 新增 `proxy_allowed()`，回環位址一律 `trust_env=False`（httpx 讀 Windows 註冊表代理且忽略 `ProxyOverride`，否則本機 8080 會回 502）。 |
+| C1–C3 安全加固 | 未完成 | 聲紋信封仍是自製 XOR + 硬編碼開發金鑰；`.env` 仍有明文 key；`.claude/` 仍未忽略。 |
+| D1–D3 聲紋真實鏈路 | 未完成 | 對話鏈路仍硬編碼 `IdentityResult("accepted", …)`，未接 `IOT_VOICEPRINT_ENFORCE`。 |
+| E1 SQLite WAL | 未完成 | — |
+| E2 TTS 明確化 | 未完成 | `services/tts/windows.py` 仍一律回傳靜音。 |
+| E3 錄音前端現代化 | 未完成 | 仍是 `createScriptProcessor` 的批次流程。 |
+
+**額外完成、不在原方案內**：ASR 後端改為可切換，預設 SenseVoice-Small（ONNX int8 228 MB，CPU 上約 0.4–0.6 秒／句），並把 8 個 `scripts/*.ps1` 納入版本控制、`.env` 改由 `.env.example` 建立。詳見 `docs/IMPLEMENTATION_STATUS.md`。
+
 ---
 
 ## 0. 執行前準備（一次性，5 分鐘）

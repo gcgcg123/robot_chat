@@ -1,10 +1,6 @@
 # 情感陪伴機器人一鍵啟動指南
 
-專案位置：
-
-```text
-C:\Users\gcgcg\OneDrive\Desktop\IoT_group5\project_place
-```
+專案位置：就是你解壓／clone 出來的資料夾（本文件以 `<專案根目錄>` 表示）。
 
 ## 第一次使用
 
@@ -22,7 +18,15 @@ data\secrets\deepseek.key
 
 ### ZIP 使用者的一鍵方式
 
-從 GitHub 下載 ZIP 並解壓後，直接雙擊根目錄的 `一鍵安裝並啟動.bat`。腳本會自動建立 `.venv`、安裝依賴、下載缺少的 Xiaozhi 參考程式與 ASR 模型，並在首次執行時完成密鑰、管理員密碼與 simulator token 設定；後續再次執行會直接啟動服務。這需要 Python 3.10 或更新版本、Git 和網路連線。
+從 GitHub 下載 ZIP 並解壓後，直接雙擊根目錄的 `一鍵安裝並啟動.bat`。腳本會安裝依賴、下載缺少的 Xiaozhi 參考程式與 ASR 模型、由 `.env.example` 建立 `.env`，並在首次執行時完成密鑰、管理員密碼與 simulator token 設定；後續再次執行會直接啟動服務。這需要 Python 3.10 或更新版本、Git 和網路連線。
+
+腳本不建立虛擬環境，而是依序尋找解譯器：`IOT_PYTHON` → `configs/launcher.json` 的 `python` → 專案 `.venv\Scripts\python.exe` → PATH 上的 `python`。若你想用特定的 conda／venv 環境，把它的 `python.exe` 路徑填進 `configs/launcher.json` 的 `python` 欄位即可。
+
+預設下載 **SenseVoice-Small（約 228 MB）**。要改用 Whisper 基線（約 1.5 GB）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap-project.ps1 -AsrModel whisper
+```
 
 ### Docker 方式
 
@@ -167,8 +171,12 @@ logs\heartbeat-error.log
 一鍵工具無法使用時才需要：
 
 ```powershell
-cd C:\Users\gcgcg\OneDrive\Desktop\IoT_group5\project_place
+cd <專案根目錄>
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+.\scripts\download-model.ps1          # 預設 SenseVoice-Small（約 228 MB）
 $env:DEEPSEEK_API_KEY = "<新 key>"
 uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 ```

@@ -29,7 +29,7 @@ from services.dashboard.read_model import (
     record_heartbeat,
     review_risk_event,
 )
-from services.audio.asr import AsrService
+from services.audio.factory import create_asr_service, describe_asr_backend
 from services.audio.normalize import normalize_audio
 from services.audio.quality import check_quality
 from services.enrollment.languages import Language, LANGUAGES
@@ -144,14 +144,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         application.state.providers = providers
         asr_service = providers.get("asr")
         if asr_service is None:
-            model_path = os.getenv("ASR_MODEL_PATH", str(ROOT / "models" / "asr" / "whisper-large-v3-turbo-ct2"))
-            model_path = str((ROOT / model_path).resolve()) if not Path(model_path).is_absolute() else model_path
-            asr_service = AsrService(
-                model_path,
-                model_factory=providers.get("asr_model_factory"),
-                device=os.getenv("ASR_DEVICE", "auto"),
-                compute_type=os.getenv("ASR_COMPUTE_TYPE", "auto"),
-            )
+            asr_service = create_asr_service(providers)
         application.state.asr_service = asr_service
         application.state.asr_worker = AsrWorker(asr_service, max_queue=int(os.getenv("ASR_MAX_QUEUE", "4")))
         application.state.turn_registry = TurnRegistry()
@@ -210,13 +203,15 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     @application.get("/health")
     def health() -> dict[str, Any]:
         admin_configured = bool(os.getenv("IOT_ADMIN_PASSWORD", "").strip())
+        asr = describe_asr_backend()
         return {
             "status": "ok",
             "service": "dialogue",
             "deepseek_configured": bool(os.getenv("DEEPSEEK_API_KEY", "").strip()),
             "admin_configured": admin_configured,
             "diagnostics": [] if admin_configured else ["admin_password_required"],
-            "asr_model": os.getenv("ASR_MODEL_PATH", str(ROOT / "models" / "asr" / "whisper-large-v3-turbo-ct2")),
+            "asr_backend": asr["backend"],
+            "asr_model": asr["model_path"],
         }
 
     @application.get("/", include_in_schema=False)

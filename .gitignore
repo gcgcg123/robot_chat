@@ -34,5 +34,6 @@ models/**
 Thumbs.db
 Desktop.ini
 
-# PowerShell launch scripts are machine-local (may contain absolute paths); do not version them.
-*.ps1
+# The PowerShell launchers under scripts/ ARE versioned: the .bat entrypoints
+# call them, so ignoring them made a fresh clone unable to start. They resolve
+# the interpreter through Resolve-ProjectPython instead of hardcoding one path.

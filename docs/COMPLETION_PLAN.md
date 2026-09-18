@@ -11,7 +11,7 @@
 | 模块 | 当前实现 | 是否真模型 | 优先级 |
 |---|---|---|---|
 | 对话 LLM | DeepSeek `deepseek-chat`（[deepseek.py](../services/dialogue/deepseek.py)） | ✅ 真（需 key） | — |
-| ASR 语音转文字 | faster-whisper `whisper-large-v3-turbo`（[asr.py](../services/audio/asr.py)） | ✅ 真（需下载模型） | — |
+| ASR 语音转文字 | 默认 **SenseVoice-Small**（[sensevoice.py](../services/audio/sensevoice.py)，ONNX int8 228 MB，粤/普/英）；可选 faster-whisper `whisper-large-v3-turbo`（[asr.py](../services/audio/asr.py)） | ✅ 真（需下载模型） | — |
 | RAG / 长期记忆 | 表 + 接口 + 检索函数都有，但**没接进对话链路** | ⚠️ 半成品 | **P0** |
 | TTS 语音合成 | 输出**静音**（[windows.py](../services/tts/windows.py)） | ❌ 占位 | **P0** |
 | 声纹识别 | `[均值, RMS, 过零率]` 统计量 + 余弦（[provider.py](../services/voiceprint/provider.py)） | ❌ 占位 | P1 |
@@ -228,11 +228,11 @@ ESP 真机麦克风 → ASR → 对话 → TTS 播放 → LCD 字幕全链路通
 每次改完一个模块，跑：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q
-.\.venv\Scripts\python.exe -m compileall -q services simulator scripts
+python -m pytest tests -q
+python -m compileall -q services simulator scripts
 ```
 
-（若用你自己的 conda 环境，把 `.venv` 换成你的环境 python。）
+（`python` 請用跑專案的那個解譯器：啟動器依序找 `IOT_PYTHON` → `configs/launcher.json` 的 `python` → 專案 `.venv` → PATH。`pytest` 目前不在 `requirements.txt`，需先 `python -m pip install pytest`。）
 
 ---
 

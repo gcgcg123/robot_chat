@@ -18,6 +18,20 @@ def pytest_configure(config):
     os.environ["IOT_DATA_DIR"] = _runtime.name
     os.environ["DATABASE_PATH"] = os.path.join(_runtime.name, "emotional_robot.sqlite3")
     os.environ["DEEPSEEK_API_KEY"] = ""
+    # services/dialogue/app.py calls load_dotenv(), and load_dotenv does not
+    # override variables that already exist.  Pin the ASR knobs here so a
+    # developer's local .env (which selects a backend and tuning) cannot change
+    # what the suite asserts.
+    for name, value in (
+        ("ASR_PROVIDER", "whisper"),
+        ("ASR_BEAM_SIZE", "1"),
+        ("ASR_TEMPERATURE", "0.0"),
+        ("ASR_CONDITION_ON_PREVIOUS_TEXT", "0"),
+        ("ASR_WITHOUT_TIMESTAMPS", "1"),
+        ("ASR_VAD_FILTER", "1"),
+        ("ASR_USE_ITN", "1"),
+    ):
+        os.environ[name] = value
 
 
 def pytest_unconfigure(config):

@@ -6,6 +6,20 @@ import time
 from urllib.parse import urlparse
 import httpx
 
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def proxy_allowed(url: str) -> bool:
+    """Whether a system proxy may be used for this URL.
+
+    httpx reads the Windows registry proxy settings and ignores their
+    ``ProxyOverride`` list, so trusting the environment sends a loopback
+    heartbeat to the local proxy (typically a Clash/V2Ray port) and gets a
+    502 back instead of reaching the backend.  Localhost must go direct.
+    """
+
+    return urlparse(url).hostname not in LOOPBACK_HOSTS
+
 
 def send(url: str, device_id: str, firmware_version: str, token: str = "", csrf: str = "") -> dict:
     payload = {"device_id": device_id, "firmware": firmware_version, "capabilities": ["audio_in", "audio_out"], "ip": "simulator", "is_simulator": True, "user_id": "sim-user"}
@@ -14,7 +28,7 @@ def send(url: str, device_id: str, firmware_version: str, token: str = "", csrf:
         headers["Authorization"] = f"Bearer {token}"
     if csrf:
         headers["X-CSRF-Token"] = csrf
-    response = httpx.post(url, json=payload, headers=headers, timeout=10)
+    response = httpx.post(url, json=payload, headers=headers, timeout=10, trust_env=proxy_allowed(url))
     response.raise_for_status()
     return response.json()
 

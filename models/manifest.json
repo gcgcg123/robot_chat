@@ -2,6 +2,19 @@
   "schema_version": 1,
   "models": [
     {
+      "id": "asr.sensevoice-small.onnx",
+      "task": "automatic-speech-recognition",
+      "source": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+      "revision": "main",
+      "target_dir": "models/asr/sensevoice-small",
+      "loader": "sherpa-onnx",
+      "required_files": ["model.int8.onnx", "tokens.txt"],
+      "checksums": {
+        "model.int8.onnx": "C71F0CE00BEC95B07744E116345E33D8CBBE08CEF896382CF907BF4B51A2CD51",
+        "tokens.txt": "F449EB28DC567533D7FA59BE34E2ABCA8784F771850C78A47FB731A31429A1DC"
+      }
+    },
+    {
       "id": "asr.whisper-large-v3-turbo.ct2",
       "task": "automatic-speech-recognition",
       "source": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo",

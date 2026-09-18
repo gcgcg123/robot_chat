@@ -4,11 +4,20 @@
 
 ## ZIP 一鍵安裝
 
-將 GitHub ZIP 解壓後，雙擊根目錄的 `一鍵安裝並啟動.bat`。它會建立虛擬環境、安裝 Python 依賴、補齊 Xiaozhi 參考程式、下載 ASR 模型、建立 simulator token，首次執行時以隱藏輸入保存 DeepSeek key 與 Dashboard 密碼，最後啟動 Dashboard。需要 Python 3.10+、Git 和可連網環境；模型約 1.6 GB，下載只需一次。
+將 GitHub ZIP 解壓後，雙擊根目錄的 `一鍵安裝並啟動.bat`。它會安裝 Python 依賴、補齊 Xiaozhi 參考程式、下載 ASR 模型、由 `.env.example` 建立 `.env`、建立 simulator token，首次執行時以隱藏輸入保存 DeepSeek key 與 Dashboard 密碼，最後啟動 Dashboard。需要 Python 3.10+、Git 和可連網環境；模型下載只需一次。
 
-Docker 使用者可執行 `powershell -ExecutionPolicy Bypass -File scripts/bootstrap-project.ps1 -Docker`。第一次會建立 `.env.docker` 範本，填入本機管理員密碼及（可選）DeepSeek key 後再次執行；模型目錄需先按 `scripts/download-model.ps1` 下載，容器會把資料寫入 Docker volume。
+預設下載的是 **SenseVoice-Small（約 228 MB）**，而不是原本 1.5 GB 的 Whisper：它在 CPU 上約 0.5 秒轉寫一句話（Whisper large-v3-turbo 約 35 秒），而且原生支援粵語。要改用 Whisper 基線：
 
-注意：`models/asr/whisper-large-v3-turbo` 是 Hugging Face Transformers checkpoint；`faster-whisper` 需要 CTranslate2 格式。因此 ASR 端點預設使用 `models/asr/whisper-large-v3-turbo-ct2`，完成轉換或下載預轉換模型後才會啟用。
+```powershell
+.\scripts\bootstrap-project.ps1 -AsrModel whisper     # 約 1.5 GB
+.\scripts\download-model.ps1 -Model both              # 兩個都下
+```
+
+下載腳本會優先用專案解譯器旁的 `hf` / `huggingface-cli`，找不到就退回 `huggingface_hub` Python API；連線受限時可加 `-Endpoint https://hf-mirror.com`。
+
+Docker 使用者可執行 `powershell -ExecutionPolicy Bypass -File scripts/bootstrap-project.ps1 -Docker`。第一次會建立 `.env.docker` 範本，填入本機管理員密碼及（可選）DeepSeek key 後再次執行；模型目錄需先按 `scripts/download-model.ps1` 下載，容器會把資料寫入 Docker volume，並以唯讀方式掛載 `./models`。
+
+ASR 後端由 `configs/launcher.json` 的 `asr_provider` 決定（`sensevoice` 或 `whisper`），啟動器會把它寫成 `ASR_PROVIDER` 環境變數——所以不依賴未被版本控制的 `.env`。模型清單、來源與 SHA-256 見 `models/manifest.json`。
 
 ## 一鍵啟動（Windows）
 
@@ -25,15 +34,18 @@ Docker 使用者可執行 `powershell -ExecutionPolicy Bypass -File scripts/boot
 ## 手動啟動備援
 
 ```powershell
-cd C:\Users\gcgcg\OneDrive\Desktop\IoT_group5\project_place
-py -3.10 -m venv .venv
+cd <你的專案目錄>
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
 # 在目前 shell 內設定密鑰，不要把密鑰寫入 .env 或 Git：
 $env:DEEPSEEK_API_KEY = '<從安全密鑰管理器注入>'
+.\scripts\download-model.ps1            # 預設下載 SenseVoice-Small
 uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 ```
+
+啟動器會依序尋找解譯器：`IOT_PYTHON` → `configs/launcher.json` 的 `python` → 專案 `.venv` → PATH 上的 `python`。若你用的不是專案 `.venv`，把它的路徑填進 `configs/launcher.json` 的 `python` 即可。
 
 開啟 `http://127.0.0.1:8080/dashboard`。未設定密鑰時，服務仍會使用可測試的 fallback 回覆；設定後才呼叫 DeepSeek OpenAI-compatible endpoint。模型 ID 由環境變數 `DEEPSEEK_MODEL` 控制，預設 `deepseek-chat`，不要把未確認的 v4 名稱硬編碼。
 
@@ -41,9 +53,9 @@ uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 
 三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。目前聲紋仍是示範模型，PC 以所選使用者模擬對話歸屬。
 
-- `GET /health`：服務狀態
+- `GET /health`：服務狀態（含 `asr_backend` 與使用的模型路徑）
 - `POST /api/chat`：文字對話、情緒標籤、SQLite 紀錄
-- `POST /api/transcribe`：faster-whisper Turbo WAV/audio 轉寫
+- `POST /api/transcribe`：WAV/audio 轉寫（後端由 `ASR_PROVIDER` 決定：SenseVoice 或 faster-whisper）
 - `GET /api/conversations`：Dashboard 資料
 - `GET /dashboard`：最小後台
 
