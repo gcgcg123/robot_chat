@@ -2,6 +2,7 @@ param(
     [switch]$Docker,
     [switch]$NoBrowser,
     [switch]$SkipModelDownload,
+    [switch]$SkipUpstream,
     [ValidateSet("sensevoice", "whisper", "both")]
     [string]$AsrModel = "sensevoice",
     [string]$DataDir
@@ -42,13 +43,35 @@ if (-not (Test-Path -LiteralPath $envFile)) {
     Write-Host "Created .env from .env.example." -ForegroundColor Cyan
 }
 
+# The Xiaozhi tree is an OPTIONAL reference: nothing in services/, simulator/ or
+# tests/ imports it. Downloading it must therefore never abort the install --
+# HTTPS access to github.com is reset on many networks (e.g. behind the GFW),
+# while SSH often still works.
 $upstreamPath = Join-Path $projectRoot "upstream\xiaozhi-esp32-server"
-if (-not (Test-Path -LiteralPath (Join-Path $upstreamPath ".git"))) {
+$upstreamUrl = "https://github.com/xinnan-tech/xiaozhi-esp32-server.git"
+if (Test-Path -LiteralPath (Join-Path $upstreamPath ".git")) {
+    Write-Host "Xiaozhi reference already present." -ForegroundColor DarkGray
+} elseif ($SkipUpstream) {
+    Write-Host "Skipping the optional Xiaozhi reference tree (-SkipUpstream)." -ForegroundColor DarkGray
+} else {
     $git = Get-Command git -ErrorAction SilentlyContinue
-    if (-not $git) { throw "Git is required to download the pinned Xiaozhi reference." }
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $upstreamPath) | Out-Null
-    & $git.Source clone --depth 1 https://github.com/xinnan-tech/xiaozhi-esp32-server.git $upstreamPath
-    if ($LASTEXITCODE -ne 0) { throw "Unable to download the Xiaozhi reference repository." }
+    if (-not $git) {
+        Write-Host "WARNING: git not found; skipping the optional Xiaozhi reference tree." -ForegroundColor Yellow
+    } else {
+        # A previous failed clone leaves a non-empty directory that blocks git clone.
+        if (Test-Path -LiteralPath $upstreamPath) { Remove-Item -Recurse -Force $upstreamPath -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $upstreamPath) | Out-Null
+        & $git.Source clone --depth 1 $upstreamUrl $upstreamPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host ""
+            Write-Host "WARNING: could not download the Xiaozhi reference tree." -ForegroundColor Yellow
+            Write-Host "         It is optional and nothing in this project imports it," -ForegroundColor Yellow
+            Write-Host "         so the installation continues." -ForegroundColor Yellow
+            Write-Host "         If you want it later, HTTPS to github.com is often reset; try SSH:" -ForegroundColor Yellow
+            Write-Host "           git clone --depth 1 git@github.com:xinnan-tech/xiaozhi-esp32-server.git `"$upstreamPath`"" -ForegroundColor Yellow
+            Write-Host ""
+        }
+    }
 }
 
 # Download the configured ASR model. SenseVoice is the default backend: it is
