@@ -88,17 +88,23 @@ def _remember_items(value: Any) -> list[dict[str, Any]]:
 
 
 class DeepSeekClient:
-    def __init__(self, api_key: str | None = None, base_url: str | None = None, model: str | None = None, timeout: float = 30, transport=None):
+    def __init__(self, api_key: str | None = None, base_url: str | None = None, model: str | None = None, timeout: float = 30, transport=None, attempts: int = 2):
         self.api_key = (api_key if api_key is not None else os.getenv("DEEPSEEK_API_KEY", "")).strip()
         self.base_url = (base_url or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")).rstrip("/")
-        self.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        self.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
         self.timeout = timeout
         self.transport = transport
+        # Transport failures (a hanging relay, a reset connection) are transient and
+        # cost the whole turn: the reply degrades to the canned fallback and, worse,
+        # the turn carries no JSON block, so nothing is remembered. One retry turns
+        # most of those into a normal answer.
+        self.attempts = max(1, int(attempts))
 
-    def reply(self, messages: list[dict], request_id: str = "") -> dict:
-        if not self.api_key:
-            return {"text": "", "model": self.model, "usage": {}, "status": "unavailable", "request_id": request_id}
-        payload = {"model": self.model, "messages": messages, "temperature": 0.6}
+    # Statuses worth a second attempt. 401/429/5xx are answered by the server and
+    # will answer the same way again, so retrying them only wastes the user's time.
+    _RETRYABLE = {"timeout", "network_error", "error"}
+
+    def _attempt(self, payload: dict, request_id: str) -> dict:
         started = time.perf_counter()
         try:
             with httpx.Client(timeout=self.timeout, transport=self.transport) as client:
@@ -109,10 +115,34 @@ class DeepSeekClient:
                 response.raise_for_status()
                 body = response.json(); choice = body.get("choices", [{}])[0].get("message", {}).get("content", "")
                 parsed = extract_structured(str(choice))
-                return {"text": parsed["text"], "emotion": parsed["emotion"], "risk_level": parsed["risk_level"], "risk_evidence": parsed["risk_evidence"], "remember": parsed["remember"], "model": body.get("model", self.model), "usage": body.get("usage", {}), "status": "ok", "latency_ms": int((time.perf_counter() - started) * 1000), "request_id": request_id}
+                # ``model`` is always the name we asked for, on success and failure
+                # alike, so the history stays comparable.  ``served_model`` is what
+                # the endpoint reports it actually ran -- the two differ when a relay
+                # normalises the request (this project's endpoint answers
+                # "deepseek-flash" whatever name it is sent).
+                return {"text": parsed["text"], "emotion": parsed["emotion"], "risk_level": parsed["risk_level"], "risk_evidence": parsed["risk_evidence"], "remember": parsed["remember"], "model": self.model, "served_model": str(body.get("model") or self.model), "usage": body.get("usage", {}), "status": "ok", "latency_ms": int((time.perf_counter() - started) * 1000), "request_id": request_id}
         except httpx.TimeoutException:
-            return {"text": "", "model": self.model, "usage": {}, "status": "timeout", "request_id": request_id}
+            return {"text": "", "model": self.model, "usage": {}, "status": "timeout", "latency_ms": int((time.perf_counter() - started) * 1000), "request_id": request_id}
         except httpx.NetworkError:
-            return {"text": "", "model": self.model, "usage": {}, "status": "network_error", "request_id": request_id}
+            return {"text": "", "model": self.model, "usage": {}, "status": "network_error", "latency_ms": int((time.perf_counter() - started) * 1000), "request_id": request_id}
         except Exception:
-            return {"text": "", "model": self.model, "usage": {}, "status": "error", "request_id": request_id}
+            return {"text": "", "model": self.model, "usage": {}, "status": "error", "latency_ms": int((time.perf_counter() - started) * 1000), "request_id": request_id}
+
+    def reply(self, messages: list[dict], request_id: str = "") -> dict:
+        if not self.api_key:
+            return {"text": "", "model": self.model, "usage": {}, "status": "unavailable", "request_id": request_id}
+        payload = {"model": self.model, "messages": messages, "temperature": 0.6}
+        result: dict = {}
+        for attempt in range(1, self.attempts + 1):
+            result = self._attempt(payload, request_id)
+            if result.get("status") == "ok" or result.get("status") not in self._RETRYABLE:
+                break
+            if attempt < self.attempts:
+                # Without this line a degraded turn leaves no trace anywhere: the
+                # user just sees a canned reply and the memory never gets updated.
+                print(f"[deepseek] {result.get('status')} after {result.get('latency_ms')} ms "
+                      f"(attempt {attempt}/{self.attempts}), retrying request_id={request_id}", flush=True)
+        else:
+            print(f"[deepseek] giving up after {self.attempts} attempts: status={result.get('status')} "
+                  f"request_id={request_id}", flush=True)
+        return result

@@ -65,7 +65,9 @@ uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 
 啟動器會依序尋找解譯器：`IOT_PYTHON` → `configs/launcher.json` 的 `python` → 專案 `.venv` → PATH 上的 `python`。若你用的不是專案 `.venv`，把它的路徑填進 `configs/launcher.json` 的 `python` 即可。
 
-開啟 `http://127.0.0.1:8080/dashboard`。未設定密鑰時，服務仍會使用可測試的 fallback 回覆；設定後才呼叫 DeepSeek OpenAI-compatible endpoint。模型 ID 由環境變數 `DEEPSEEK_MODEL` 控制，預設 `deepseek-chat`，不要把未確認的 v4 名稱硬編碼。
+開啟 `http://127.0.0.1:8080/dashboard`。未設定密鑰時，服務仍會使用可測試的 fallback 回覆；設定後才呼叫 DeepSeek OpenAI-compatible endpoint。模型 ID 由 `DEEPSEEK_MODEL` 控制（`configs/launcher.json` 的 `deepseek_model` 會覆寫 `.env`，四份設定檔的值已統一為 `deepseek-flash`）。
+
+> **端點可能改寫模型名**：實測這個 endpoint 對任何模型名都回 200 並回報 `served_model=deepseek-flash`（連不存在的名稱也一樣），所以請求的名稱在這裡只是形式。對話紀錄因此分開存兩個欄位——`model` 一律是你設定的名稱（成功與失敗一致，方便比對），`served_model` 是端點回報的實際模型，另有 `llm_status` 標示這輪是否降級（見下）。設定與實際一致時兩者會相同。
 
 ## 目前端點
 

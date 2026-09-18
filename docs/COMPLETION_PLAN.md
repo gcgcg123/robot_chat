@@ -10,7 +10,7 @@
 
 | 模块 | 当前实现 | 是否真模型 | 优先级 |
 |---|---|---|---|
-| 对话 LLM | DeepSeek `deepseek-chat`（[deepseek.py](../services/dialogue/deepseek.py)） | ✅ 真（需 key） | — |
+| 对话 LLM | DeepSeek `deepseek-flash`（[deepseek.py](../services/dialogue/deepseek.py)） | ✅ 真（需 key） | — |
 | ASR 语音转文字 | 默认 **SenseVoice-Small**（[sensevoice.py](../services/audio/sensevoice.py)，ONNX int8 228 MB，粤/普/英）；可选 faster-whisper `whisper-large-v3-turbo`（[asr.py](../services/audio/asr.py)） | ✅ 真（需下载模型） | — |
 | RAG / 长期记忆 | **三層飛輪已接通**（槽位／熱／冷 + 惰性衰減 + 自動寫入，[services/memory/](../services/memory/)，見 [MEMORY_FLYWHEEL.md](MEMORY_FLYWHEEL.md)）；外部 RAGFlow 仍未接 | ✅ 真（本地檢索） | — |
 | TTS 语音合成 | 输出**静音**（[windows.py](../services/tts/windows.py)） | ❌ 占位 | **P0** |

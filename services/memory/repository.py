@@ -23,7 +23,14 @@ from services.memory.flywheel import (
     effective_score,
     next_tier,
 )
-from services.memory.schemas import TIER_COLD, TIER_HOT, TIER_SLOT, TIERS, MemoryChunk
+from services.memory.schemas import (
+    SINGLE_VALUED_SLOT_KEYS,
+    TIER_COLD,
+    TIER_HOT,
+    TIER_SLOT,
+    TIERS,
+    MemoryChunk,
+)
 
 _COLUMNS = (
     "chunk_id, owner_user_id, text, source_id, source_kind, approved, active, "
@@ -218,48 +225,103 @@ def duplicate_groups(
     return [members for _representative, members in groups if len(members) > 1]
 
 
-def _find_near_duplicate(
+def _collect_match_candidates(
     conn: Any,
     user_id: str,
-    embedding: Sequence[float] | None,
     *,
+    text: str,
+    slot_key: str | None,
+    embedding: Sequence[float] | None,
     settings: MemorySettings | None = None,
     limit: int = NEAR_DUPLICATE_SCAN,
-) -> tuple[Any, float]:
-    """Find the user's row whose probe is almost the same question.
+) -> list[Any]:
+    """Rows that might already hold this fact, in preference order.
 
-    This exists because the model does not reliably reuse slot keys: one hobby has
-    been stored as ``hobby``, ``guitar``, ``hobby_guitar`` and ``instrument``.  Key
-    and text equality cannot see that, but the probe vectors can.
-
-    The threshold is deliberately conservative -- see ``MemorySettings.merge_similarity``
-    for the measured bands.  Because "one word different, different fact" (my dog's
-    name vs my cat's name) scores up to 0.826 while honest paraphrases can be as low
-    as 0.609, a low threshold would destroy distinct memories; only near-identical
-    probes are merged, and paraphrases are left to the extractor's key reuse.
+    A row qualifies by a matching slot key, an identical statement, or a probe that
+    is almost the same question.  Every one of those is only a *hint*: a slot key can
+    name a category rather than a fact (see ``SINGLE_VALUED_SLOT_KEYS``), and a
+    generic probe ("我最近學會了什麼？") is shared by every fact in that category. The
+    caller decides identity from the statements.
     """
 
     config = settings or MemorySettings()
-    if embedding is None or config.merge_similarity > 1.0:
-        return None, 0.0
-    rows = conn.execute(
-        "SELECT chunk_id, text, probe, slot_key, importance, hits, approved, embedding_json "
-        "FROM memory_chunks WHERE owner_user_id=? AND embedding_json IS NOT NULL "
-        "ORDER BY created_at DESC LIMIT ?",
-        (user_id, limit),
-    ).fetchall()
+    columns = "chunk_id, text, probe, slot_key, importance, hits, approved, embedding_json"
+    found: list[Any] = []
+    seen: set[str] = set()
 
-    best, best_score = None, 0.0
-    for row in rows:
-        stored = _decode_embedding(row["embedding_json"])
-        if stored is None:
-            continue
-        score = cosine_similarity(list(embedding), list(stored))
-        if score > best_score:
-            best, best_score = row, score
-    if best is not None and best_score >= config.merge_similarity:
-        return best, best_score
-    return None, best_score
+    def add(rows) -> None:
+        for row in rows:
+            if row["chunk_id"] not in seen:
+                seen.add(row["chunk_id"])
+                found.append(row)
+
+    if slot_key:
+        add(conn.execute(
+            f"SELECT {columns} FROM memory_chunks WHERE owner_user_id=? AND slot_key=? AND active=1",
+            (user_id, slot_key),
+        ).fetchall())
+    add(conn.execute(
+        f"SELECT {columns} FROM memory_chunks WHERE owner_user_id=? AND text=? AND active=1",
+        (user_id, text),
+    ).fetchall())
+
+    if embedding is not None and config.merge_similarity <= 1.0:
+        rows = conn.execute(
+            f"SELECT {columns} FROM memory_chunks "
+            "WHERE owner_user_id=? AND active=1 AND embedding_json IS NOT NULL "
+            "ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+        near = []
+        for row in rows:
+            stored = _decode_embedding(row["embedding_json"])
+            if stored is None:
+                continue
+            if cosine_similarity(list(embedding), list(stored)) >= config.merge_similarity:
+                near.append(row)
+        add(near)
+
+    # A single-valued key is by definition the same fact, so it wins immediately.
+    if slot_key in SINGLE_VALUED_SLOT_KEYS:
+        for row in found:
+            if row["slot_key"] == slot_key:
+                return [row] + [r for r in found if r is not row]
+    return found
+
+
+def _same_fact_flags(
+    new_text: str,
+    candidate_texts: Sequence[str],
+    embedder: Embedder | None,
+    *,
+    floor: float,
+) -> list[bool]:
+    """Which candidate statements describe the same fact as ``new_text``.
+
+    One batched call for the whole candidate list.  Measured with the shipped model:
+    a re-statement scores 0.8234-0.9738 while two different facts that share a key and
+    a probe score 0.4479-0.7646, so 0.80 separates them.  Lexical overlap does not
+    (the bands cross), which is why this uses embeddings.
+
+    Without an embedder it degrades to exact statement equality -- the safe
+    direction: an unnecessary extra row is recoverable, a silent overwrite is not.
+    """
+
+    normalised = [" ".join(str(value).split()) for value in candidate_texts]
+    if not candidate_texts:
+        return []
+    if embedder is None:
+        target = " ".join(new_text.split())
+        return [value == target for value in normalised]
+    try:
+        vectors = list(embedder([new_text, *candidate_texts]))
+    except Exception:
+        target = " ".join(new_text.split())
+        return [value == target for value in normalised]
+    if len(vectors) != len(candidate_texts) + 1:
+        return [False] * len(candidate_texts)
+    head = list(vectors[0])
+    return [cosine_similarity(head, list(vector)) >= floor for vector in vectors[1:]]
 
 
 def upsert_memory(
@@ -274,21 +336,26 @@ def upsert_memory(
     source_id: str = "conversation",
     source_kind: str = "auto",
     embedding: Sequence[float] | None = None,
+    statement_embedder: Embedder | None = None,
     now: float | None = None,
     settings: MemorySettings | None = None,
 ) -> dict[str, Any]:
-    """Insert a memory, or refresh the existing one that already holds this fact.
+    """Insert a memory, or refresh the existing row that holds **this same fact**.
 
-    Re-stating a known fact must not pile up near-duplicates, so a proposal is
-    matched against the user's rows in three passes:
+    Re-stating a fact must not pile up near-duplicates, and re-using a category key
+    must not destroy the previous fact.  A proposal therefore collects candidate rows
+    (same key, same text, near-identical probe) and then asks whether a candidate
+    really holds the same fact:
 
-    1. the same ``slot_key`` -- the identity the model is asked to reuse;
-    2. an identical ``text`` -- the same statement with no key to match on;
-    3. a near-identical **probe** (see :func:`_find_near_duplicate`), which is what
-       catches a re-statement filed under a different key.
+    * an identical statement, or the same **single-valued** key (name, age, home,
+      ...), updates in place -- that is how "我不叫X，我叫Y" replaces the old value;
+    * anything else merges only when the *statements* themselves match
+      (``statement_merge_similarity``), because "我學會了唱跳rap籃球" and "我學會了
+      寫歌詞" share both the key `skill` and the probe "我最近學會了什麼？" while
+      being two different skills.
 
-    A match is updated in place: accumulated ``hits`` survive, ``importance`` takes
-    the higher value, and ``approved`` is only ever raised.
+    A merge keeps accumulated ``hits``, takes the higher ``importance``, and only
+    ever raises ``approved``.
     """
 
     config = settings or MemorySettings()
@@ -297,24 +364,32 @@ def upsert_memory(
     encoded = _encode_embedding(embedding)
 
     existing = None
-    action = "updated"
+    action = "inserted"
     similarity = 0.0
-    if slot_key:
-        existing = conn.execute(
-            "SELECT chunk_id, text, probe, slot_key, importance, hits, approved FROM memory_chunks "
-            "WHERE owner_user_id=? AND slot_key=?",
-            (user_id, slot_key),
-        ).fetchone()
-    if existing is None:
-        existing = conn.execute(
-            "SELECT chunk_id, text, probe, slot_key, importance, hits, approved FROM memory_chunks "
-            "WHERE owner_user_id=? AND text=?",
-            (user_id, text),
-        ).fetchone()
-    if existing is None:
-        existing, similarity = _find_near_duplicate(conn, user_id, embedding, settings=config)
-        if existing is not None:
-            action = "merged"
+    candidates = _collect_match_candidates(
+        conn, user_id, text=text, slot_key=slot_key, embedding=embedding, settings=config
+    )
+    if candidates:
+        exact = next((row for row in candidates if row["text"] == text), None)
+        if exact is not None:
+            existing, action = exact, "updated"
+        else:
+            single_valued = bool(slot_key) and slot_key in SINGLE_VALUED_SLOT_KEYS
+            key_hit = next(
+                (row for row in candidates if single_valued and row["slot_key"] == slot_key), None
+            )
+            if key_hit is not None:
+                existing, action = key_hit, "updated"
+            else:
+                flags = _same_fact_flags(
+                    text,
+                    [row["text"] for row in candidates],
+                    statement_embedder,
+                    floor=config.statement_merge_similarity,
+                )
+                same_fact = next((row for row, ok in zip(candidates, flags) if ok), None)
+                if same_fact is not None:
+                    existing, action = same_fact, "merged"
 
     if existing is not None:
         merged_importance = max(float(existing["importance"] or 0.0), float(importance))
@@ -445,6 +520,7 @@ def apply_turn(
     used_chunk_ids: Iterable[str] = (),
     candidates: Iterable[dict[str, Any]] = (),
     embedder: Embedder | None = None,
+    statement_embedder: Embedder | None = None,
     now: float | None = None,
     settings: MemorySettings | None = None,
 ) -> dict[str, Any]:
@@ -452,6 +528,10 @@ def apply_turn(
 
     This is the write half of the flywheel.  Scoring first means a memory that
     was just used can be promoted in the same turn.
+
+    ``embedder`` embeds the **probes** (queries); ``statement_embedder`` embeds the
+    **statements** and is what decides whether a proposal is the same fact as an
+    existing row.  They are separate because bge expects a different prefix for each.
     """
 
     config = settings or MemorySettings()
@@ -483,6 +563,7 @@ def apply_turn(
                     source_id=item.get("source_id", "conversation"),
                     source_kind=item.get("source_kind", "auto"),
                     embedding=vector,
+                    statement_embedder=statement_embedder,
                     now=moment,
                     settings=config,
                 )
