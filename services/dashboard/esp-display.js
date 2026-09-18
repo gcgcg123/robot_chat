@@ -5,7 +5,7 @@
   else root.EspDisplay=api;
 })(typeof window==="object"?window:globalThis,function(){
   "use strict";
-  const labels={idle:"待機 · 我在這裡",listening:"正在聆聽",transcribing:"正在理解…",thinking:"正在思考",speaking:"正在回覆",offline:"裝置離線",error:"暫時無法完成"};
+  const labels={idle:"待机 · 我在这里",listening:"正在聆听",transcribing:"正在理解…",thinking:"正在思考",speaking:"正在回复",offline:"设备离线",error:"暂时无法完成"};
   function wrapText(text,measure,width){
     const lines=[];let line="";
     for(const char of Array.from(text)){
@@ -40,8 +40,8 @@
       else if(state==="transcribing")this.model.caption="正在理解…";
       this.model.changedAt=this.now();this.emit();
     }
-    offline(text){this.reset("offline",text||"連線中斷，請重新整理頁面");}
-    fail(text){const turn=this.turn;this.reset("error",text||"處理失敗，請重新錄音");this.turn=turn;}
+    offline(text){this.reset("offline",text||"连接中断，请重新整理页面");}
+    fail(text){const turn=this.turn;this.reset("error",text||"处理失败，请重新录音");this.turn=turn;}
     event(event){
       const p=event.payload||{};
       if(event.type==="turn.started"){
@@ -75,7 +75,7 @@
       if(emotion)this.model.emotion=emotion;
       if(risk)this.model.risk=risk;
       this.model.expression=this.model.risk==="urgent"?"urgent":this.model.emotion==="negative"?"comfort":this.model.emotion==="positive"?"happy":"neutral";
-      this.model.caption="";this.model.progress=0;this.model.revealed=0;this.model.mode="等待音訊";
+      this.model.caption="";this.model.progress=0;this.model.revealed=0;this.model.mode="等待音频";
       this.setState("speaking");
       const segment=this.model.segment;
       const valid=()=>this.epoch===epoch && this.active && this.model.segment===segment;
@@ -87,11 +87,11 @@
         if(mode)this.model.mode=mode;this.emit();
       };
       this.cancel=this.play(p.text,p.language,{
-        start:audio=>{if(valid()){this.model.mode=audio?"播放進度（估算）":"字幕預覽（無音訊）";this.emit();}},
-        boundary:count=>reveal(count,"播放進度（文字邊界）"),
+        start:audio=>{if(valid()){this.model.mode=audio?"播放进度（估算）":"字幕预览（无音频）";this.emit();}},
+        boundary:count=>reveal(count,"播放进度（文字边界）"),
         tick:count=>reveal(count),
         end:()=>{if(!valid())return;reveal(p.text.length);this.active=false;this.cancel=null;this.pump();this.finish();},
-        error:()=>{if(valid()){this.model.mode="播放失敗 · 字幕預覽";this.emit();}}
+        error:()=>{if(valid()){this.model.mode="播放失败 · 字幕预览";this.emit();}}
       });
     }
     finish(){
@@ -140,7 +140,7 @@
     const display=new Display({play,onComplete,onChange:m=>{
       if(status)status.textContent=labels[m.state];
       if(progress)progress.textContent=m.segment?"第 "+m.segment+" 段 · "+m.mode+" · "+Math.round(m.progress*100)+"%":"";
-      if(transcript)transcript.textContent=(m.userText?"你："+m.userText+"\n":"")+(m.transcript?"機器人："+m.transcript:"");
+      if(transcript)transcript.textContent=(m.userText?"你："+m.userText+"\n":"")+(m.transcript?"机器人："+m.transcript:"");
       canvas.setAttribute("aria-label",labels[m.state]+"。"+m.caption);
     }});
     let raf;
@@ -149,7 +149,7 @@
     function frame(time){
       const m=display.model,t=reduced?0:time/1000,color=colors[m.expression],off=m.state==="offline";
       c.fillStyle="#101f2b";c.fillRect(0,0,320,240);
-      c.fillStyle="#a7bfcb";c.font="10px system-ui";c.textAlign="left";c.fillText("心語 / ESP SCREEN",12,18);
+      c.fillStyle="#a7bfcb";c.font="10px system-ui";c.textAlign="left";c.fillText("心语 / ESP SCREEN",12,18);
       c.textAlign="right";c.fillStyle=off?"#ffc3ac":"#8fe1d0";c.fillText(off?"× OFFLINE":"PC SIM · 320×240",308,18);
       c.save();c.translate(160,75+(m.state==="idle"?Math.sin(t*1.8)*3:0));
       c.strokeStyle=color;c.fillStyle=color;c.lineWidth=3;c.lineCap="round";
@@ -166,7 +166,7 @@
       c.beginPath();
       if(m.state==="speaking"){c.ellipse(0,18,10,4+Math.abs(Math.sin(t*9))*5,0,0,Math.PI*2);c.stroke();}
       else{c.arc(0,10,14,.2,Math.PI-.2);c.stroke();}
-      if(m.expression==="urgent"){c.font="bold 12px system-ui";c.textAlign="center";c.fillText("! 需要關注",0,48);}
+      if(m.expression==="urgent"){c.font="bold 12px system-ui";c.textAlign="center";c.fillText("! 需要关注",0,48);}
       if(m.state==="thinking" || m.state==="transcribing"){
         for(let i=0;i<3;i++){c.globalAlpha=reduced?.7:.25+.75*(Math.sin(t*4-i)+1)/2;c.beginPath();c.arc(66+i*9,-12,2.5,0,Math.PI*2);c.fill();}c.globalAlpha=1;
       }
@@ -180,7 +180,7 @@
       }
       c.fillStyle="#eef5f6";c.font="12px system-ui";c.textAlign="left";
       c.fillText(labels[m.state]||m.state,12,142);
-      if(m.expression==="comfort" && m.state!=="speaking"){c.textAlign="right";c.fillStyle=color;c.fillText("慢慢來，我在",308,142);}
+      if(m.expression==="comfort" && m.state!=="speaking"){c.textAlign="right";c.fillStyle=color;c.fillText("慢慢来，我在",308,142);}
       c.fillStyle="#203440";c.fillRect(8,152,304,70);
       c.font="14px system-ui";c.fillStyle="#f3f7f9";c.textAlign="left";
       const lines=wrapText(m.caption,text=>c.measureText(text).width,280);
@@ -190,7 +190,7 @@
       lines.slice(start,start+3).forEach((text,i)=>c.fillText(text,16,169+i*20));
       c.fillStyle="#a7bfcb";c.font="9px system-ui";
       c.fillText(lines.length>3?"行 "+(start+1)+"–"+Math.min(start+3,lines.length)+" / "+lines.length:"",12,235);
-      c.textAlign="right";c.fillText(m.segment?"SEG "+m.segment+" · "+Math.round(m.progress*100)+"%":"2.4″ · 邏輯預覽",308,235);
+      c.textAlign="right";c.fillText(m.segment?"SEG "+m.segment+" · "+Math.round(m.progress*100)+"%":"2.4″ · 逻辑预览",308,235);
       c.fillStyle=color;c.fillRect(8,221,304*m.progress,2);
       raf=requestAnimationFrame(frame);
     }
