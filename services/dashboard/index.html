@@ -1,56 +1,95 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>心語 · IoT 情緒陪伴後台</title>
-  <link rel="stylesheet" href="/dashboard-assets/dashboard.css" />
-  <style>.user-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}.user-row{display:flex;justify-content:space-between;align-items:center;padding:14px;border:1px solid #e6ebf2;color:inherit;text-decoration:none;background:#fff}.user-row:hover{border-color:#26ad8a}.user-row small{display:block;color:#9aa5b5;margin-top:4px}.login-screen[hidden]{display:none!important}</style>
+  <title>心语 · IoT 情绪陪伴后台</title>
+  <link rel="stylesheet" href="/dashboard-assets/dashboard.css?v=20260915-12" />
+  <link rel="stylesheet" href="/dashboard-assets/dashboard-polish.css?v=20260915-12" />
+  <link rel="stylesheet" href="/dashboard-assets/profile.css?v=20260915-12" />
+  <style>.user-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}.user-row{display:flex;justify-content:space-between;align-items:center;padding:14px;border:1px solid #e6ebf2;color:inherit;text-decoration:none;background:#fff}.user-row:hover{border-color:#26ad8a}.user-row small{display:block;color:#9aa5b5;margin-top:4px}.landing-screen[hidden]{display:none!important}</style>
 </head>
 <body>
-  <div id="login-screen" class="login-screen" hidden>
-    <form id="login-form" class="login-card">
-      <div class="brand"><span class="brand-mark">♡</span><div><strong>心語</strong><small>IoT 情緒陪伴後台</small></div></div>
-      <h1>管理員登入</h1>
-      <p>登入後管理使用者、聲紋登記與模擬器測試。</p>
-      <label>管理員帳號<input id="login-actor" name="actor_id" autocomplete="username" required value="admin"></label>
-      <label>密碼<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
-      <button type="submit" class="primary-btn">登入 Dashboard</button>
-      <div id="login-error" class="form-error" role="alert"></div>
-    </form>
+  <div id="landing-screen" class="landing-screen" hidden>
+    <section class="landing-hero">
+      <div class="landing-brand"><span class="brand-mark">♡</span><div><strong>心语</strong><small>IoT 情绪陪伴后台</small></div></div>
+      <p class="landing-eyebrow">安全、私密的情绪陪伴空间</p>
+      <h1>欢迎回来</h1>
+      <p class="landing-subtitle">让每一次对话，都从一句温柔问候开始。</p>
+    </section>
+    <section class="landing-marquee" aria-label="温馨问候跑马灯">
+      <div class="marquee-stack">
+        <div class="marquee-row marquee-left"><div class="marquee-track"><span>欢迎回来，今天也要好好照顾自己。</span><span>你已经做得很好了，慢慢来也没关系。</span><span>记得喝水、伸展一下，让肩膀放松。</span><span>每一次对话，都是你与自己温柔靠近的一步。</span></div></div>
+        <div class="marquee-row marquee-right"><div class="marquee-track"><span>天气会变，心情也会，但你不必独自面对。</span><span>愿你今天遇见一点点值得微笑的小事。</span><span>累了就停下来，休息也是前进的一部分。</span><span>无论此刻如何，都有人愿意听你说。</span></div></div>
+        <div class="marquee-row marquee-left"><div class="marquee-track"><span>你不必一直坚强，允许自己偶尔慢下来。</span><span>今天的努力，未来会用另一种方式回报你。</span><span>世界很大，但你值得被温柔接住。</span><span>给自己一个深呼吸，然后继续发光。</span></div></div>
+        <div class="marquee-row marquee-right"><div class="marquee-track"><span>早安，愿今天的风都朝你喜欢的方向吹。</span><span>你已经比昨天更靠近自己一点了。</span><span>如果觉得累，请记得你的感受很重要。</span><span>愿你心里常有微光，眼里总有盼望。</span></div></div>
+      </div>
+      <button id="landing-login-btn" class="landing-login-btn" type="button"><span>登</span><span class="login-gap"></span><span>录</span></button>
+      <div id="landing-login-panel" class="landing-login-panel" hidden>
+        <button id="landing-login-close" class="landing-login-close" type="button" aria-label="关闭">×</button>
+        <h2>管理员登录</h2>
+        <p>请使用您的后台账号与密码。</p>
+        <form id="login-form" class="login-card">
+          <label>管理员账号<input id="login-actor" name="actor_id" autocomplete="username" required value="admin"></label>
+          <label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
+          <button type="submit" class="primary-btn">登录</button>
+          <div id="login-error" class="form-error" role="alert"></div>
+        </form>
+      </div>
+    </section>
   </div>
   <div class="app-shell" hidden>
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">♡</span><div><strong>心語</strong><small>IoT 情緒陪伴後台</small></div></div>
+      <div class="brand"><span class="brand-mark">♡</span><div><strong>心语</strong><small>IoT 情绪陪伴后台</small></div></div>
       <nav>
-        <a class="nav-item active" href="#overview">⌂ <span>總覽</span></a>
-        <a class="nav-item" href="#emotions">◌ <span>情緒分析</span></a>
-        <a class="nav-item" href="#devices">⌁ <span>IoT 裝置</span></a>
-        <a class="nav-item" href="#conversations">▤ <span>對話紀錄</span></a>
-        <a class="nav-item" href="#users">◎ <span>使用者列表</span></a>
-        <a class="nav-item" href="#events">⚙ <span>系統事件</span></a>
+        <a class="nav-item active" href="#overview"><span class="nav-icon">⌂</span><span>总览</span></a>
+        <a class="nav-item" href="#emotions"><span class="nav-icon">◌</span><span>情绪分析</span></a>
+        <a class="nav-item" href="#devices"><span class="nav-icon">⌁</span><span>IoT 设备</span></a>
+        <a class="nav-item" href="#conversations"><span class="nav-icon">▤</span><span>对话记录</span></a>
+        <a class="nav-item" href="#users"><span class="nav-icon">◎</span><span>用户列表</span></a>
+        <a class="nav-item" href="#events"><span class="nav-icon">⚙</span><span>系统事件</span></a>
       </nav>
-      <div class="sidebar-footer"><span class="demo-dot"></span> Simulator / Demo data</div>
+      <div class="sidebar-footer"><span class="sidebar-footer-bg" aria-hidden="true"></span><span class="sidebar-footer-content"><span class="demo-dot"></span> Simulator / Demo data</span></div>
     </aside>
     <main class="content">
-      <header class="topbar"><div><p class="eyebrow">安全、私密的情緒陪伴空間</p><h1>系統總覽</h1></div><div id="service-status" class="status-badge pending">檢查服務中…</div></header>
+      <header class="topbar"><div><p class="eyebrow">安全、私密的情绪陪伴空间</p><h1>系统总览</h1></div><div class="topbar-right"><div id="service-status" class="status-badge pending">检查服务中…</div><button id="topbar-action" class="topbar-action" type="button" aria-label="功能">⚙</button><button class="user-chip" id="topbar-user-link" type="button"><span class="user-avatar" id="topbar-avatar" aria-hidden="true">管</span><span class="user-name" id="topbar-username">管理员</span></button></div></header>
       <section id="overview" class="metric-grid">
-        <article class="metric-card"><span class="metric-icon pink">♡</span><div><span>今日對話</span><strong id="conversation-count">—</strong><small id="conversation-delta">等待資料</small></div></article>
-        <article class="metric-card"><span class="metric-icon lavender">◌</span><div><span>活躍使用者</span><strong id="user-count">—</strong><small>近 24 小時</small></div></article>
-        <article class="metric-card"><span class="metric-icon mint">⌁</span><div><span>線上裝置</span><strong id="online-count">—</strong><small id="device-summary">等待 heartbeat</small></div></article>
-        <article class="metric-card"><span class="metric-icon amber">◷</span><div><span>平均回應延遲</span><strong id="latency">—</strong><small>本地紀錄</small></div></article>
+        <article class="metric-card"><span class="metric-icon pink">♡</span><div><span>今日对话</span><strong id="conversation-count">—</strong><small id="conversation-delta">等待资料</small></div></article>
+        <article class="metric-card"><span class="metric-icon lavender">◌</span><div><span>活跃用户</span><strong id="user-count">—</strong><small>近 24 小时</small></div></article>
+        <article class="metric-card"><span class="metric-icon mint">⌁</span><div><span>在线设备</span><strong id="online-count">—</strong><small id="device-summary">等待 heartbeat</small></div></article>
+        <article class="metric-card"><span class="metric-icon amber">◷</span><div><span>平均响应延迟</span><strong id="latency">—</strong><small>本地记录</small></div></article>
       </section>
       <section class="dashboard-grid">
-        <article id="emotions" class="panel emotion-panel"><div class="panel-heading"><div><h2>情緒概況</h2><p>依最近對話事件統計</p></div><span class="panel-tag">LIVE</span></div><div class="emotion-bars" id="emotion-bars"><div class="empty-state">等待情緒資料</div></div></article>
-        <article id="devices" class="panel"><div class="panel-heading"><div><h2>IoT 裝置健康度</h2><p>依 heartbeat 判斷連線狀態</p></div><span class="panel-tag">60s TTL</span></div><div id="device-list" class="device-list"><div class="empty-state">等待 ESP 或 simulator 上報</div></div></article>
+        <article id="emotions" class="panel emotion-panel"><div class="panel-heading"><div><h2>情绪概况</h2><p>依最近对话事件统计</p></div><span class="panel-tag">LIVE</span></div><div class="emotion-bars" id="emotion-bars"><div class="empty-state">等待情绪资料</div></div></article>
+        <article id="devices" class="panel"><div class="panel-heading"><div><h2>IoT 设备健康度</h2><p>依 heartbeat 判断连接状态</p></div><span class="panel-tag">60s TTL</span></div><div id="device-list" class="device-list"><div class="empty-state">等待 ESP 或 simulator 上报</div></div></article>
       </section>
-      <section id="conversations" class="panel"><div class="panel-heading"><div><h2>最近對話紀錄</h2><p>ESP 語音輸入經 ASR 與 LLM 處理後的後台摘要</p></div><button class="refresh-btn" id="refresh-btn">重新整理</button></div><div class="table-wrap"><table><thead><tr><th>時間</th><th>使用者 / 裝置</th><th>情緒</th><th>輸入摘要</th><th>回應摘要</th><th>模型</th></tr></thead><tbody id="conversation-rows"><tr><td colspan="6" class="empty-state">等待對話資料</td></tr></tbody></table></div></section>
-      <section id="users" class="panel"><div class="panel-heading"><div><h2>使用者列表</h2><p>已登記個資與聲紋狀態；裝置在線不代表本人在場</p></div><div class="panel-actions"><button id="new-user-btn" class="primary-btn" type="button">註冊新使用者</button><a href="/simulator" class="refresh-btn">開啟 PC 模擬器</a></div></div><div id="user-list" class="user-list"><div class="empty-state">等待使用者資料</div></div></section>
-      <section id="events" class="panel system-panel"><div class="panel-heading"><div><h2>系統狀態</h2><p>目前不會顯示任何 API key 或原始音訊</p></div><button id="logout-btn" class="refresh-btn" type="button">登出</button></div><div class="system-grid"><div><span>ASR</span><strong id="asr-status">已配置</strong></div><div><span>DeepSeek</span><strong id="llm-status">檢查中</strong></div><div><span>資料庫</span><strong id="db-status">SQLite</strong></div><div><span>硬體整合</span><strong class="muted">等待 ESP</strong></div></div></section>
-      <footer>情緒陪伴機器人 · 僅供技術研究與 IoT 專案展示，不提供醫療診斷。</footer>
+      <section id="conversations" class="panel"><div class="panel-heading"><div><h2>最近对话记录</h2><p>ESP 语音输入经 ASR 与 LLM 处理后的后台摘要</p></div><button class="refresh-btn" id="refresh-btn">重新整理</button></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>用户 / 设备</th><th>情绪</th><th>输入摘要</th><th>响应摘要</th><th>模型</th></tr></thead><tbody id="conversation-rows"><tr><td colspan="6" class="empty-state">等待对话资料</td></tr></tbody></table></div></section>
+      <section id="users" class="panel"><div class="panel-heading"><div><h2>用户列表</h2><p>已登记个人资料与声纹状态；设备在线不代表本人在场</p></div><div class="panel-actions"><button id="new-user-btn" class="primary-btn" type="button">注册新用户</button><a href="/simulator" class="refresh-btn">开启 PC 模拟器</a></div></div><div id="user-list" class="user-list"><div class="empty-state">等待用户资料</div></div></section>
+      <section id="events" class="panel system-panel"><div class="panel-heading"><div><h2>系统状态</h2><p>目前不会显示任何 API key 或原始音频</p></div><button id="logout-btn" class="refresh-btn" type="button">退出登录</button></div><div class="system-grid"><div><span>ASR</span><strong id="asr-status">已配置</strong></div><div><span>DeepSeek</span><strong id="llm-status">检查中</strong></div><div><span>数据库</span><strong id="db-status">SQLite</strong></div><div><span>硬件整合</span><strong class="muted">等待 ESP</strong></div></div></section>
+      <footer>情绪陪伴机器人 · 仅供技术研究与 IoT 项目展示，不提供医疗诊断。</footer>
     </main>
   </div>
-  <script src="/dashboard-assets/dashboard.js"></script>
-  <script src="/dashboard-assets/login.js"></script>
+  <dialog id="admin-profile-dialog" class="profile-dialog">
+    <div class="profile-dialog-card">
+      <button id="profile-dialog-close" class="profile-dialog-close" type="button" aria-label="关闭">×</button>
+      <p class="eyebrow">个人展示设置</p>
+      <h2>修改管理员头像与昵称</h2>
+      <div class="avatar-section">
+        <span id="avatar-preview" class="profile-avatar" aria-hidden="true">管</span>
+        <label class="upload-btn" for="avatar-input">选择头像</label>
+        <input id="avatar-input" type="file" accept="image/*" hidden />
+      </div>
+      <label class="field">主页展示昵称<input id="nickname-input" maxlength="24" placeholder="仅用于主页右上角展示" /></label>
+      <p class="profile-hint">此昵称仅用于主页右上角展示，不会改变登录账号。</p>
+      <p id="profile-error" role="alert"></p>
+      <div class="profile-actions">
+        <button id="save-profile" class="primary-btn" type="button">保存</button>
+        <button id="profile-cancel" class="refresh-btn" type="button">取消</button>
+      </div>
+    </div>
+  </dialog>
+  <script src="/dashboard-assets/dashboard.js?v=20260915-12"></script>
+  <script src="/dashboard-assets/login.js?v=20260915-12"></script>
+  <script src="/dashboard-assets/profile.js?v=20260915-12"></script>
 </body>
 </html>

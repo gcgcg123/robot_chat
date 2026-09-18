@@ -104,6 +104,27 @@ function Test-Health {
     }
 }
 
+function Get-PortOwningProcessId([int]$Port) {
+    $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($connections) {
+        return [int]($connections | Select-Object -First 1 -ExpandProperty OwningProcess)
+    }
+    $netstatLines = & netstat -ano
+    $listenerLine = $netstatLines | Where-Object { $_ -match ":${Port}\s" -and $_ -match 'LISTENING' } | Select-Object -First 1
+    if ($listenerLine -and $listenerLine -match 'LISTENING\s+(\d+)') {
+        return [int]$Matches[1]
+    }
+    return 0
+}
+
+function Test-ProjectServiceProcess([int]$ProcessId) {
+    if ($ProcessId -le 0) { return $false }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    if (-not $process) { return $false }
+    $commandLine = [string]$process.CommandLine
+    return ($commandLine -match 'uvicorn' -and $commandLine -match 'services\.dialogue\.app:app')
+}
+
 $serviceStateFile = Join-Path $RuntimeDir "service.json"
 $heartbeatStateFile = Join-Path $RuntimeDir "heartbeat.json"
 $lockFile = Join-Path $RuntimeDir "start.lock"
@@ -124,9 +145,23 @@ try {
         $reuseService = $true
         $serviceProcess = $existing.Process
         $runId = [string]$existing.State.run_id
+    } elseif ($existing) {
+        Write-Host "Stopping the unresponsive launcher-managed service before restarting." -ForegroundColor Yellow
+        Stop-OwnedProcess -StateFile $serviceStateFile -ExpectedRole "service" | Out-Null
+        $existing = $null
     }
 
     if (-not $reuseService) {
+        $portOwner = Get-PortOwningProcessId -Port $actualPort
+        if ($portOwner -gt 0) {
+            if (Test-ProjectServiceProcess -ProcessId $portOwner) {
+                Write-Host "Stopping an outdated project service on port ${actualPort} (PID $portOwner)." -ForegroundColor Yellow
+                Stop-ProcessTree -TargetProcessId $portOwner
+                Start-Sleep -Milliseconds 500
+            } else {
+                throw "Port ${actualPort} is already in use by another process (PID $portOwner). Close it or change the port in configs\launcher.json."
+            }
+        }
         $serviceArguments = @(
             "-m", "uvicorn", "services.dialogue.app:app",
             "--host", $hostAddress,

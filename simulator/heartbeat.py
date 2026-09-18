@@ -14,7 +14,7 @@ def send(url: str, device_id: str, firmware_version: str, token: str = "", csrf:
         headers["Authorization"] = f"Bearer {token}"
     if csrf:
         headers["X-CSRF-Token"] = csrf
-    response = httpx.post(url, json=payload, headers=headers, timeout=10)
+    response = httpx.post(url, json=payload, headers=headers, timeout=10,trust_env=False,)
     response.raise_for_status()
     return response.json()
 
