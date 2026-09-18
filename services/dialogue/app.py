@@ -49,7 +49,7 @@ from services.users.repository import create_user, delete_user_data, get_user, l
 from services.users.schemas import DeleteConfirmation, ProfileInput, ProfilePatch
 from services.analysis.risk import analyze_local, merge_risk
 from services.voiceprint.matcher import identify as identify_voiceprint
-from services.voiceprint.provider import VoiceprintProvider
+from services.voiceprint.provider import create_voiceprint_provider
 from services.voiceprint.storage import seal, open_sealed
 from services.enrollment.service import EnrollmentService
 from services.memory.candidates import valid_slot_key
@@ -160,7 +160,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         application.state.asr_worker = AsrWorker(asr_service, max_queue=int(os.getenv("ASR_MAX_QUEUE", "4")))
         application.state.turn_registry = TurnRegistry()
         application.state.enrollment_service = EnrollmentService()
-        application.state.voiceprint_provider = providers.get("voiceprint") or VoiceprintProvider()
+        application.state.voiceprint_provider = providers.get("voiceprint") or create_voiceprint_provider(runtime.testing)
         application.state.tts_provider = providers.get("tts") or create_tts_provider()
         application.state.media_store = MediaStore(runtime.data_dir / "media")
         yield
@@ -346,6 +346,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             admin_auth(request, conn)
             try:
                 return analytics_overview(conn, days)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -363,6 +365,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             admin_auth(request, conn, write=True)
             try:
                 item = review_risk_event(conn, risk_id, payload.review_status)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             if item is None:
@@ -549,10 +553,16 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             # against; the statement text only contributes a lexical signal.  So a
             # vector refresh is needed when the probe changes, or when there is no
             # probe to speak of and the text itself is the key.
-            if embedding_provider.available and ("probe" in payload or (not existing["probe"] and "text" in payload)):
-                probe = str(payload.get("probe") or payload.get("text") or existing["probe"] or existing["text"])
-                try: fields.append("embedding_json=?"); params.append(json.dumps(embedding_provider.embed_queries([probe])[0]))
-                except Exception: pass
+            probe = (str(payload["probe"] or "").strip() or None) if "probe" in payload else existing["probe"]
+            text_value = str(payload["text"]).strip() if "text" in payload else existing["text"]
+            retrieval_key = probe or text_value
+            if retrieval_key != (existing["probe"] or existing["text"]):
+                encoded = None
+                if embedding_provider.available:
+                    try: encoded = json.dumps(embedding_provider.embed_queries([retrieval_key])[0])
+                    except Exception: pass
+                # A failed refresh must not leave a vector for the previous key.
+                fields.append("embedding_json=?"); params.append(encoded)
             fields.append("updated_at=?"); params.append(time.time())
             params.extend([memory_id, user_id])
             conn.execute(f"UPDATE memory_chunks SET {', '.join(fields)} WHERE chunk_id=? AND owner_user_id=?", params)
@@ -621,7 +631,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             if not user:
                 raise HTTPException(status_code=404, detail="user_not_found")
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
-            saved_steps = [r["step"] for r in conn.execute("SELECT step FROM voiceprint_samples WHERE user_id=? ORDER BY step", (payload.user_id,)).fetchall()]
+            model_version = application.state.voiceprint_provider.model_version
+            saved_steps = [r["step"] for r in conn.execute("SELECT step FROM voiceprint_samples WHERE user_id=? AND model_version=? ORDER BY step", (payload.user_id, model_version)).fetchall()]
         item = application.state.enrollment_service.start(payload.user_id, payload.language)
         application.state.enrollment_service.transition(item.enrollment_id, "collecting_samples")
         return {"enrollment_id": item.enrollment_id, "user_id": item.user_id, "state": "collecting_samples", "required_samples": 3, "expires_at": item.expires_at, 'language': item.language, 'prompts': LANGUAGES[item.language]['prompts'], "sample_count": len(saved_steps), "saved_steps": saved_steps}
@@ -631,7 +642,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         with db() as conn: admin_auth(request, conn, write=True)
         item = application.state.enrollment_service.items.get(enrollment_id)
         if not item: raise HTTPException(status_code=404, detail="enrollment_not_found")
-        if step is None or not 1 <= step <= 3:
+        if step is not None and not 1 <= step <= 3:
             raise HTTPException(status_code=422, detail="invalid_sample_step")
         sample = await file.read()
         if len(sample) > 10 * 1024 * 1024: raise HTTPException(status_code=413, detail="audio_too_large")
@@ -643,18 +654,30 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             if normalized.duration_ms > 20_000:
                 raise ValueError('audio_too_long')
             if not quality['accepted']: raise ValueError(quality['reason'])
-            embedding = application.state.voiceprint_provider.embed(normalized.pcm16)
+            provider = application.state.voiceprint_provider
+            embedding = provider.embed(normalized.pcm16)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         sample_id, now = str(uuid.uuid4()), time.time()
         with db() as conn:
+            user = get_user(conn, item.user_id)
+            if not user: raise HTTPException(status_code=404, detail='user_not_found')
+            if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
+            saved_steps = {row[0] for row in conn.execute("SELECT step FROM voiceprint_samples WHERE user_id=? AND model_version=?", (item.user_id, provider.model_version))}
+            next_step = next((value for value in (1, 2, 3) if value not in saved_steps), None)
+            if step is None:
+                step = next_step
+            if step is None or (step not in saved_steps and step != next_step):
+                raise HTTPException(status_code=422, detail="invalid_sample_step")
             conn.execute(
                 "INSERT INTO voiceprint_samples(sample_id,user_id,step,embedding_json,quality_json,model_version,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,step) DO UPDATE SET sample_id=excluded.sample_id, embedding_json=excluded.embedding_json, quality_json=excluded.quality_json, model_version=excluded.model_version, updated_at=excluded.updated_at",
-                (sample_id, item.user_id, step, seal(embedding), json.dumps(quality, ensure_ascii=False), "pc-baseline-v2", now, now),
+                (sample_id, item.user_id, step, seal(embedding), json.dumps(quality, ensure_ascii=False), provider.model_version, now, now),
             )
             conn.commit()
-            sample_count = conn.execute("SELECT COUNT(*) FROM voiceprint_samples WHERE user_id=?", (item.user_id,)).fetchone()[0]
+            sample_count = conn.execute("SELECT COUNT(*) FROM voiceprint_samples WHERE user_id=? AND model_version=?", (item.user_id, provider.model_version)).fetchone()[0]
         quality.update({'duration_ms': normalized.duration_ms, 'status': 'accepted'})
         return {"enrollment_id": enrollment_id, "state": item.state, "sample_count": sample_count, "step": step, "quality": quality}
 
@@ -671,41 +694,75 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             user = get_user(conn, item.user_id)
             if not user: raise HTTPException(status_code=404, detail='user_not_found')
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
-            rows = conn.execute("SELECT step, embedding_json FROM voiceprint_samples WHERE user_id=? ORDER BY step", (item.user_id,)).fetchall()
+            model_version = application.state.voiceprint_provider.model_version
+            rows = conn.execute("SELECT step, embedding_json FROM voiceprint_samples WHERE user_id=? AND model_version=? ORDER BY step", (item.user_id, model_version)).fetchall()
         if len(rows) < 3: raise HTTPException(status_code=422, detail="insufficient_samples")
         try:
             application.state.enrollment_service.collecting(enrollment_id)
             vectors = [open_sealed(row["embedding_json"]) for row in rows]
             embedding = [sum(values) / len(values) for values in zip(*vectors)]
+            norm = sum(value * value for value in embedding) ** 0.5
+            if norm <= 1e-12:
+                raise ValueError("empty_embedding")
+            embedding = [value / norm for value in embedding]
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        template_id = str(uuid.uuid4()); now = time.time()
+        now = time.time()
+        template_ids = [str(uuid.uuid4()) for _ in vectors]
         with db() as conn:
+            user = get_user(conn, item.user_id)
+            if not user: raise HTTPException(status_code=404, detail='user_not_found')
+            if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
             conn.execute("UPDATE voiceprint_templates SET active=0 WHERE user_id=?", (item.user_id,))
             conn.execute('UPDATE users SET enrollment_language=? WHERE user_id=?', (item.language, item.user_id))
-            conn.execute("INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)", (template_id, item.user_id, seal(embedding), "pc-baseline-v2", 1, now))
-            conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(rows), "template_id": template_id})
+            provider = application.state.voiceprint_provider
+            for template_id, vector in zip(template_ids, vectors):
+                conn.execute(
+                    "INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)",
+                    (template_id, item.user_id, seal(vector), provider.model_version, 1, now),
+                )
+            conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(rows), "template_id": template_ids[0]})
         item.state = "completed"
-        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_id, "model_version": "pc-baseline-v2"}
+        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_ids[0], "template_ids": template_ids, "model_version": provider.model_version}
         return item.result
 
     @application.post("/api/voiceprint/identify")
     async def identify_voice(request: Request, file: UploadFile = File(...)):
-        with db() as conn: admin_auth(request, conn, write=True)
+        with db() as conn: actor = admin_auth(request, conn, write=True)
         sample = await file.read()
         if not sample: raise HTTPException(status_code=422, detail="empty_audio")
         try:
             normalized = normalize_audio(sample, file.content_type or '')
             vector = application.state.voiceprint_provider.embed(normalized.pcm16)
             with db() as conn:
-                rows = conn.execute("SELECT t.template_id,t.user_id,t.embedding_json,t.active FROM voiceprint_templates t JOIN users u ON u.user_id=t.user_id WHERE t.active=1 AND u.status='active' AND t.model_version='pc-baseline-v2'").fetchall()
+                model_version = application.state.voiceprint_provider.model_version
+                rows = conn.execute("SELECT t.template_id,t.user_id,t.embedding_json,t.active FROM voiceprint_templates t JOIN users u ON u.user_id=t.user_id WHERE t.active=1 AND u.status='active' AND t.model_version=?", (model_version,)).fetchall()
             templates = []
             for row in rows:
                 try: values = open_sealed(row["embedding_json"])
                 except (ValueError, TypeError): continue
                 templates.append({"template_id": row["template_id"], "user_id": row["user_id"], "embedding": values, "active": bool(row["active"])})
-            result = identify_voiceprint(vector, templates)
+            result = identify_voiceprint(vector, templates, provider=model_version)
+            with db() as conn:
+                record_audit(
+                    conn,
+                    actor,
+                    "voiceprint_identification",
+                    target_type="user",
+                    target_id=result.user_id,
+                    metadata={
+                        "decision": result.decision,
+                        "best_score": round(result.best_score, 6),
+                        "second_score": round(result.second_score, 6) if result.second_score is not None else None,
+                        "template_id": result.template_id,
+                        "provider": result.provider,
+                    },
+                )
             return {"decision": result.decision, "user_id": result.user_id, "best_score": result.best_score, "second_score": result.second_score, "template_id": result.template_id, "provider": result.provider}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -714,7 +771,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         with db() as conn:
             admin_auth(request, conn)
             if not get_user(conn, user_id): raise HTTPException(status_code=404, detail="user_not_found")
-            rows = conn.execute("SELECT step, quality_json, model_version, updated_at FROM voiceprint_samples WHERE user_id=? ORDER BY step", (user_id,)).fetchall()
+            model_version = application.state.voiceprint_provider.model_version
+            rows = conn.execute("SELECT step, quality_json, model_version, updated_at FROM voiceprint_samples WHERE user_id=? AND model_version=? ORDER BY step", (user_id, model_version)).fetchall()
             return [{"step": r["step"], "quality": json.loads(r["quality_json"] or "{}"), "model_version": r["model_version"], "updated_at": r["updated_at"]} for r in rows]
 
     @application.get("/api/media/{media_id}")
@@ -763,6 +821,20 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                     await websocket.send_json(ProtocolEvent("pc-sim", session_id, "", "turn.failed", {"error": str(exc)}).as_dict())
                     continue
                 device_id = str(message.get("device_id") or "pc-sim")
+                requested_user_id = str(message.get("user_id") or "")
+                requested_template_id = str(message.get("voiceprint_id") or "")
+                provider_version = application.state.voiceprint_provider.model_version
+                with db() as conn:
+                    verified = conn.execute(
+                        "SELECT 1 FROM voiceprint_templates t JOIN users u ON u.user_id=t.user_id "
+                        "WHERE t.template_id=? AND t.user_id=? AND t.active=1 "
+                        "AND t.model_version=? AND u.status='active'",
+                        (requested_template_id, requested_user_id, provider_version),
+                    ).fetchone()
+                if not verified:
+                    await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "turn.failed", {"error": "voiceprint_required"}).as_dict())
+                    registry.cancel(turn_id)
+                    continue
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "turn.started", {"request_id": request_id}).as_dict())
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "stt.final", {"text": text}).as_dict())
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "thinking", "emotion": "neutral", "caption": "正在理解…"}).as_dict())

@@ -17,22 +17,18 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements-dev.txt
       - name: Compile Python
         run: python -m compileall -q services simulator scripts
-      # tests/ is deliberately not versioned (see .gitignore), so a checkout of
-      # this repository usually has no test tree. Skipping is the correct outcome
-      # there; running pytest against a missing path exits 4 and would fail CI.
-      - name: Run project tests (skipped when the repository ships no tests)
+      - name: Run project tests
+        run: python -m pytest tests -q
+      - name: Run JavaScript regression tests
         shell: pwsh
         run: |
-          if (-not (Test-Path -LiteralPath "tests")) {
-            Write-Host "info: tests/ is not versioned in this repository; skipping pytest."
-            exit 0
+          Get-ChildItem tests -Filter *.cjs | ForEach-Object {
+            node $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          python -m pip install -r requirements-dev.txt
-          python -m pytest tests -q
-          exit $LASTEXITCODE
       - name: Check JavaScript syntax
         shell: pwsh
         run: node --check services/dashboard/simulator.js

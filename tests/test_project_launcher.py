@@ -143,6 +143,33 @@ def test_check_only_reports_ready_project_without_starting_processes():
         assert report["python_ready"] is True
 
 
+@pytest.mark.parametrize("provider,filename", [("sensevoice", "model.int8.onnx"), ("whisper", "model.bin")])
+@pytest.mark.parametrize("absolute", [False, True])
+def test_check_only_resolves_configured_model_paths(tmp_path, provider, filename, absolute):
+    project = tmp_path / "project with spaces"
+    scripts = project / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("start-project.ps1", "launcher-common.ps1"):
+        shutil.copyfile(ROOT / "scripts" / name, scripts / name)
+    model_directory = (tmp_path if absolute else project) / "model weights"
+    model_directory.mkdir()
+    (model_directory / filename).write_bytes(b"fixture")
+    config = json.loads((ROOT / "configs/launcher.json").read_text())
+    config["asr_provider"] = provider
+    config[f"asr_{provider}_model_path"] = str(model_directory) if absolute else "./model weights"
+    (project / "configs").mkdir()
+    (project / "configs/launcher.json").write_text(json.dumps(config))
+    result = subprocess.run(
+        [WINDOWS_POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+         str(scripts / "start-project.ps1"), "-CheckOnly", "-SkipSecret"],
+        cwd=tmp_path, capture_output=True, text=True, errors="replace", timeout=30,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["asr_model_present"] is True
+    assert f"asr_model_missing:{provider}" not in report["diagnostics"]
+
+
 @pytest.mark.parametrize("expired_local", [False, True])
 def test_start_health_heartbeat_and_stop_round_trip(expired_local):
     port = free_port()
