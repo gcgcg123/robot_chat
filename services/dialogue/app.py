@@ -37,6 +37,7 @@ from services.audio.worker import AsrWorker, QueueFullError
 from services.device_gateway.events import normalize_heartbeat
 from services.device_gateway.contracts import DeviceEvent as ProtocolEvent
 from services.dialogue.deepseek import DeepSeekClient
+from services.dialogue.identity import conversation_identity
 from services.dialogue.pipeline import process_text
 from services.dialogue.turns import TurnRegistry
 from services.security.auth import _session, create_session, require_admin, require_device, require_csrf, set_session_cookie, SESSION_COOKIE
@@ -47,10 +48,16 @@ from services.storage.settings import RuntimeSettings
 from services.users.repository import create_user, delete_user_data, get_user, list_users, update_user
 from services.users.schemas import DeleteConfirmation, ProfileInput, ProfilePatch
 from services.analysis.risk import analyze_local, merge_risk
-from services.voiceprint.matcher import IdentityResult, identify as identify_voiceprint
+from services.voiceprint.matcher import identify as identify_voiceprint
 from services.voiceprint.provider import VoiceprintProvider
 from services.voiceprint.storage import seal, open_sealed
 from services.enrollment.service import EnrollmentService
+from services.memory.candidates import valid_slot_key
+from services.memory.embeddings import create_embedding_provider
+from services.memory.flywheel import MemorySettings, effective_score
+from services.memory.recall import select_for_turn
+from services.memory.repository import apply_turn, evaluate_tiers, set_tier, tier_counts, upsert_memory
+from services.memory.schemas import TIERS
 from services.tts.config import create_tts_provider
 from services.tts.media_store import MediaStore
 
@@ -131,6 +138,10 @@ class EnrollmentRequest(BaseModel):
 def create_app(settings: RuntimeSettings | None = None, providers: dict | None = None) -> FastAPI:
     runtime = settings or RuntimeSettings.from_env()
     providers = providers or {}
+    # Memory flywheel tuning is read once at startup; the embedding model is
+    # resolved here too, but only *loaded* on the first turn that needs it.
+    memory_config = MemorySettings.from_env()
+    embedding_provider = providers.get("embedding") or create_embedding_provider()
     login_failures: dict[str, deque[float]] = defaultdict(deque)
 
     @asynccontextmanager
@@ -222,9 +233,21 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         return _chat(req, request)
 
     def _chat(req: ChatRequest, request: Request | None = None) -> ChatResponse:
-        if request is not None:
-            with db() as conn: admin_auth(request, conn, write=True)
-        identity = IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator")
+        identity = conversation_identity(req.user_id, req.voiceprint_id)
+        settings = memory_config
+        with db() as conn:
+            if request is not None:
+                admin_auth(request, conn, write=True)
+            # Memory belongs to the accompanied user, so the cascade runs per turn.
+            recall = select_for_turn(
+                conn,
+                user_id=req.user_id,
+                query=req.text,
+                identity=identity,
+                embedder=embedding_provider.embed_query if embedding_provider.available else None,
+                settings=settings,
+            )
+            memories = recall.selected
         llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
         result = process_text(
             req.text,
@@ -234,11 +257,28 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             session_id=request.headers.get("X-Simulator-Session", "http-chat") if request is not None else "internal-chat",
             llm=llm,
             rag_provider=providers.get("rag"),
+            memories=memories,
             request_id=str(uuid.uuid4()),
+            memory_settings=settings,
         )
         model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
         latency_ms = result.latency_ms["total"]
         conversation_id = save_conversation(req, result.reply, result.emotion, model, latency_ms, result.risk)
+        # Close the flywheel: reward what was used, store what the model proposed.
+        # Bookkeeping must never cost the user their reply, so a failure here is
+        # reported and dropped rather than turned into a 500.
+        with db() as conn:
+            try:
+                apply_turn(
+                    conn,
+                    user_id=req.user_id,
+                    used_chunk_ids=recall.chunk_ids,
+                    candidates=result.memory_candidates,
+                    embedder=embedding_provider.embed_queries if embedding_provider.available else None,
+                    settings=settings,
+                )
+            except Exception as exc:
+                print(f"[memory] apply_turn failed for user={req.user_id}: {exc}", flush=True)
         return ChatResponse(conversation_id=conversation_id, user_id=req.user_id, emotion=result.emotion, reply=result.reply, model=model, latency_ms=latency_ms)
 
     @application.post("/api/transcribe")
@@ -387,30 +427,149 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             return {"user_id": user_id, "period": period, "emotion_distribution": distribution, "conversation_count": sum(distribution.values()), "risk": {"risk_level": latest_risk, "review_status": "unreviewed", "requires_human_review": latest_risk != "none", "note": "需人工確認，可能誤判"}}
 
     @application.get("/api/users/{user_id}/memories")
-    def memories(user_id: str, request: Request):
+    def memories(user_id: str, request: Request, tier: str | None = None, include_inactive: bool = False):
+        """List a user's memories, newest first, with the live flywheel numbers.
+
+        ``score`` is not stored: it is the decayed value recomputed from
+        ``importance``/``hits``/``last_hit_at`` at read time, which is why a row
+        that stops being mentioned sinks on its own without any background job.
+        """
+
+        if tier is not None and tier not in TIERS: raise HTTPException(status_code=422, detail="invalid_tier")
         with db() as conn:
             admin_auth(request, conn)
             if not get_user(conn, user_id): raise HTTPException(status_code=404, detail="user_not_found")
-            rows = conn.execute("SELECT chunk_id,owner_user_id,text,source_id,source_kind,approved,active,created_at FROM memory_chunks WHERE owner_user_id=? ORDER BY created_at DESC", (user_id,)).fetchall()
-            return [dict(row) for row in rows]
+            sql = (
+                "SELECT chunk_id,owner_user_id,text,source_id,source_kind,approved,active,created_at,"
+                "probe,slot_key,tier,importance,hits,last_hit_at,updated_at FROM memory_chunks "
+                "WHERE owner_user_id=?"
+            )
+            params: list[Any] = [user_id]
+            if not include_inactive: sql += " AND active=1"
+            if tier is not None: sql += " AND tier=?"; params.append(tier)
+            sql += " ORDER BY created_at DESC"
+            rows = conn.execute(sql, params).fetchall()
+            moment = time.time()
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["score"] = round(effective_score(
+                    importance=float(item["importance"] or memory_config.default_importance),
+                    hits=int(item["hits"] or 0),
+                    last_hit_at=item["last_hit_at"],
+                    created_at=float(item["created_at"] or moment),
+                    now=moment,
+                    settings=memory_config,
+                ), 4)
+                item["approved"] = bool(item["approved"]); item["active"] = bool(item["active"])
+                items.append(item)
+            return {
+                "user_id": user_id,
+                "counts": tier_counts(conn, user_id),
+                "thresholds": {"promote_score": memory_config.promote_score, "demote_score": memory_config.demote_score,
+                               "half_life_days": memory_config.half_life_days, "slot_capacity": memory_config.slot_capacity,
+                               "relevance_floor": memory_config.relevance_floor},
+                "embedding_available": bool(embedding_provider.available),
+                "items": items,
+            }
 
     @application.post("/api/users/{user_id}/memories", status_code=201)
     def add_memory(user_id: str, payload: dict[str, Any], request: Request):
+        """Store a memory by hand.
+
+        This goes through ``upsert_memory`` rather than a raw INSERT so the row
+        gets a probe and an embedding: without them the retriever can never score
+        it, and a hand-written memory that the robot cannot recall is worse than
+        no UI at all.
+        """
+
         with db() as conn:
-            admin_auth(request, conn, write=True)
+            actor = admin_auth(request, conn, write=True)
             if not get_user(conn, user_id): raise HTTPException(status_code=404, detail="user_not_found")
             text_value = str(payload.get("text", "")).strip()
             if not text_value or len(text_value) > 2000: raise HTTPException(status_code=422, detail="invalid_memory")
-            memory_id = str(uuid.uuid4()); now = time.time()
-            conn.execute("INSERT INTO memory_chunks(chunk_id,owner_user_id,text,source_id,source_kind,approved,active,created_at) VALUES(?,?,?,?,?,?,?,?)", (memory_id, user_id, text_value, str(payload.get("source_id", "manual"))[:128], "memory", int(bool(payload.get("approved", False))), 1, now)); conn.commit()
-            return {"chunk_id": memory_id, "owner_user_id": user_id, "text": text_value, "approved": bool(payload.get("approved", False)), "active": True, "created_at": now}
+            probe = str(payload.get("probe", "") or "").strip() or None
+            slot_key = str(payload.get("slot_key", "") or "").strip() or None
+            if slot_key is not None and not valid_slot_key(slot_key): raise HTTPException(status_code=422, detail="invalid_slot_key")
+            try: importance = float(payload.get("importance", memory_config.default_importance))
+            except (TypeError, ValueError): raise HTTPException(status_code=422, detail="invalid_importance")
+            importance = min(max(importance, 0.0), 2.0)
+            vector = None
+            if embedding_provider.available:
+                try: vector = embedding_provider.embed_queries([probe or text_value])[0]
+                except Exception: vector = None
+            stored = upsert_memory(
+                conn, user_id=user_id, text=text_value, probe=probe, slot_key=slot_key,
+                importance=importance, approved=bool(payload.get("approved", True)),
+                source_id=str(payload.get("source_id", "manual"))[:128], source_kind="manual",
+                embedding=vector, settings=memory_config,
+            )
+            evaluate_tiers(conn, user_id, settings=memory_config)
+            record_audit(conn, actor, "add_memory", target_type="user", target_id=user_id,
+                         metadata={"chunk_id": stored["chunk_id"], "action": stored["action"]})
+            return stored
+
+    @application.patch("/api/users/{user_id}/memories/{memory_id}")
+    def update_memory(user_id: str, memory_id: str, payload: dict[str, Any], request: Request):
+        """Edit a memory, or move it between tiers by hand."""
+
+        with db() as conn:
+            actor = admin_auth(request, conn, write=True)
+            existing = conn.execute(
+                "SELECT * FROM memory_chunks WHERE chunk_id=? AND owner_user_id=?", (memory_id, user_id)
+            ).fetchone()
+            if not existing: raise HTTPException(status_code=404, detail="memory_not_found")
+            fields: list[str] = []
+            params: list[Any] = []
+            if "text" in payload:
+                text_value = str(payload["text"]).strip()
+                if not text_value or len(text_value) > 2000: raise HTTPException(status_code=422, detail="invalid_memory")
+                fields.append("text=?"); params.append(text_value)
+            if "probe" in payload:
+                fields.append("probe=?"); params.append(str(payload["probe"] or "").strip() or None)
+            if "slot_key" in payload:
+                slot_key = str(payload["slot_key"] or "").strip() or None
+                if slot_key is not None and not valid_slot_key(slot_key): raise HTTPException(status_code=422, detail="invalid_slot_key")
+                fields.append("slot_key=?"); params.append(slot_key)
+            if "importance" in payload:
+                try: importance = float(payload["importance"])
+                except (TypeError, ValueError): raise HTTPException(status_code=422, detail="invalid_importance")
+                fields.append("importance=?"); params.append(min(max(importance, 0.0), 2.0))
+            if "approved" in payload:
+                fields.append("approved=?"); params.append(int(bool(payload["approved"])))
+            if "active" in payload:
+                fields.append("active=?"); params.append(int(bool(payload["active"])))
+            if "tier" in payload and payload["tier"] not in TIERS:
+                raise HTTPException(status_code=422, detail="invalid_tier")
+            if payload.get("reset_decay"):
+                fields.append("hits=0"); fields.append("last_hit_at=NULL")
+            if not fields and "tier" not in payload: raise HTTPException(status_code=422, detail="nothing_to_update")
+            # The stored vector is the embedding of the *probe* (the canonical
+            # question), because that is what the retriever compares a question
+            # against; the statement text only contributes a lexical signal.  So a
+            # vector refresh is needed when the probe changes, or when there is no
+            # probe to speak of and the text itself is the key.
+            if embedding_provider.available and ("probe" in payload or (not existing["probe"] and "text" in payload)):
+                probe = str(payload.get("probe") or payload.get("text") or existing["probe"] or existing["text"])
+                try: fields.append("embedding_json=?"); params.append(json.dumps(embedding_provider.embed_queries([probe])[0]))
+                except Exception: pass
+            fields.append("updated_at=?"); params.append(time.time())
+            params.extend([memory_id, user_id])
+            conn.execute(f"UPDATE memory_chunks SET {', '.join(fields)} WHERE chunk_id=? AND owner_user_id=?", params)
+            conn.commit()
+            if "tier" in payload: set_tier(conn, memory_id, payload["tier"])
+            record_audit(conn, actor, "update_memory", target_type="user", target_id=user_id,
+                         metadata={"chunk_id": memory_id, "fields": sorted(set(payload))})
+            row = conn.execute("SELECT * FROM memory_chunks WHERE chunk_id=?", (memory_id,)).fetchone()
+            return dict(row)
 
     @application.delete("/api/users/{user_id}/memories/{memory_id}")
     def delete_memory(user_id: str, memory_id: str, request: Request):
         with db() as conn:
-            admin_auth(request, conn, write=True)
+            actor = admin_auth(request, conn, write=True)
             cur = conn.execute("DELETE FROM memory_chunks WHERE chunk_id=? AND owner_user_id=?", (memory_id, user_id)); conn.commit()
             if cur.rowcount == 0: raise HTTPException(status_code=404, detail="memory_not_found")
+            record_audit(conn, actor, "delete_memory", target_type="user", target_id=user_id, metadata={"chunk_id": memory_id})
             return {"ok": True}
 
     @application.post("/api/simulator/sessions")
@@ -608,20 +767,44 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "stt.final", {"text": text}).as_dict())
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "thinking", "emotion": "neutral", "caption": "正在理解…"}).as_dict())
                 req = ChatRequest(user_id=str(message.get("user_id") or "sim-user"), text=text, device_id=device_id, voiceprint_id=message.get("voiceprint_id"))
+                identity = conversation_identity(req.user_id, req.voiceprint_id)
+                with db() as conn:
+                    recall = select_for_turn(
+                        conn,
+                        user_id=req.user_id,
+                        query=text,
+                        identity=identity,
+                        embedder=embedding_provider.embed_query if embedding_provider.available else None,
+                        settings=memory_config,
+                    )
                 try:
                     result = await asyncio.to_thread(process_text,
                         text,
                         user_id=req.user_id,
                         language=user_language(req.user_id),
-                        identity=IdentityResult("accepted", req.user_id, 1.0, None, req.voiceprint_id, "simulator"),
+                        identity=identity,
                         session_id=session_id,
                         turn_id=turn_id,
                         llm=None if runtime.testing else providers.get("deepseek") or DeepSeekClient(),
                         rag_provider=providers.get("rag"),
+                        memories=recall.selected,
                         request_id=request_id,
+                        memory_settings=memory_config,
                     )
                     model = "testing-disabled" if runtime.testing else str(result.model.get("name") or result.model.get("status") or "none")
                     conversation_id = save_conversation(req, result.reply, result.emotion, model, result.latency_ms["total"], result.risk)
+                    with db() as conn:
+                        try:
+                            apply_turn(
+                                conn,
+                                user_id=req.user_id,
+                                used_chunk_ids=recall.chunk_ids,
+                                candidates=result.memory_candidates,
+                                embedder=embedding_provider.embed_queries if embedding_provider.available else None,
+                                settings=memory_config,
+                            )
+                        except Exception as exc:
+                            print(f"[memory] apply_turn failed for user={req.user_id}: {exc}", flush=True)
                     result_payload = result.as_dict() | {"conversation_id": conversation_id}
                     for index, segment in enumerate(result.segments):
                         media_id = None

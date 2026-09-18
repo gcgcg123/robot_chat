@@ -24,7 +24,9 @@ if (-not $RuntimeDir) { $RuntimeDir = Join-Path $projectRoot "runtime" }
 if (-not $LogDir) { $LogDir = Join-Path $projectRoot "logs" }
 if (-not $SecretFile) { $SecretFile = Join-Path $projectRoot "data\secrets\deepseek.key" }
 if (-not $AdminSecretFile) { $AdminSecretFile = Join-Path $projectRoot "data\secrets\admin.password" }
-if (-not $DataDir) { $DataDir = if ($env:IOT_DATA_DIR) { $env:IOT_DATA_DIR } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "IoTGroup5" } else { Join-Path $env:USERPROFILE "AppData\Local\IoTGroup5" } }
+# Runtime data lives inside the checkout (.\IoTGroup5) so nothing is written to
+# the C: drive. An explicit -DataDir or IOT_DATA_DIR still wins.
+if (-not $DataDir) { $DataDir = if ($env:IOT_DATA_DIR) { $env:IOT_DATA_DIR } else { Join-Path $projectRoot "IoTGroup5" } }
 $venvPython = Resolve-ProjectPython -ProjectRoot $projectRoot -Quiet
 $dashboardUrl = "http://${hostAddress}:${actualPort}/dashboard"
 $healthUrl = "http://${hostAddress}:${actualPort}/health"

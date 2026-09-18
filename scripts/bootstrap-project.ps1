@@ -76,15 +76,19 @@ if (Test-Path -LiteralPath (Join-Path $upstreamPath ".git")) {
 
 # Download the configured ASR model. SenseVoice is the default backend: it is
 # 228 MB instead of 1.5 GB and roughly 60x faster on a CPU-only machine.
+# The embedding model is not a backend choice: long-term memory needs it, so it
+# is always fetched alongside whichever ASR backend was picked.
 $modelProbes = @{
     "sensevoice" = "models\asr\sensevoice-small\model.int8.onnx"
     "whisper"    = "models\asr\whisper-large-v3-turbo-ct2\model.bin"
+    "embedding"  = "models\embedding\bge-small-zh-v1.5\onnx\model.onnx"
 }
-$wantedModels = if ($AsrModel -eq "both") { @("sensevoice", "whisper") } else { @($AsrModel) }
+$asrModels = if ($AsrModel -eq "both") { @("sensevoice", "whisper") } else { @($AsrModel) }
+$wantedModels = @($asrModels) + @("embedding")
 foreach ($wantedModel in $wantedModels) {
     $probe = Join-Path $projectRoot $modelProbes[$wantedModel]
     if (-not $SkipModelDownload -and -not (Test-Path -LiteralPath $probe)) {
-        Write-Host "Downloading the $wantedModel ASR model..." -ForegroundColor Cyan
+        Write-Host "Downloading the $wantedModel model..." -ForegroundColor Cyan
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "download-model.ps1") -Model $wantedModel
         if ($LASTEXITCODE -ne 0) { throw "$wantedModel model download failed." }
     }
@@ -98,9 +102,10 @@ if (-not (Test-Path -LiteralPath $secretPath) -or -not (Test-Path -LiteralPath $
     if ($LASTEXITCODE -ne 0) { throw "First-time secure setup failed." }
 }
 
+# Runtime data lives inside the checkout (.\IoTGroup5), never under %LOCALAPPDATA%.
 if (-not $DataDir) {
-    if ($env:LOCALAPPDATA) { $DataDir = Join-Path $env:LOCALAPPDATA "IoTGroup5" }
-    else { $DataDir = Join-Path $projectRoot "data\runtime" }
+    if ($env:IOT_DATA_DIR) { $DataDir = $env:IOT_DATA_DIR }
+    else { $DataDir = Join-Path $projectRoot "IoTGroup5" }
 }
 $tokenPath = Join-Path $DataDir "secrets\simulator.token"
 if (-not (Test-Path -LiteralPath $tokenPath)) {

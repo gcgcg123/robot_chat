@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -67,6 +67,9 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             chunk_id TEXT PRIMARY KEY, owner_user_id TEXT, text TEXT NOT NULL,
             source_id TEXT NOT NULL, source_kind TEXT NOT NULL, approved INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1, embedding_json TEXT, created_at REAL NOT NULL,
+            probe TEXT, slot_key TEXT, tier TEXT NOT NULL DEFAULT 'hot',
+            importance REAL NOT NULL DEFAULT 0.5, hits INTEGER NOT NULL DEFAULT 0,
+            last_hit_at REAL, updated_at REAL,
             FOREIGN KEY(owner_user_id) REFERENCES users(user_id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS risk_events (
@@ -129,21 +132,46 @@ def _ensure_user_status(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN profile_note TEXT NOT NULL DEFAULT ''")
 
 
+def _ensure_memory_columns(conn: sqlite3.Connection) -> None:
+    """Additive migration for the tiered long-term memory store.
+
+    ``tier`` is deliberately separate from ``active``: ``active=0`` means the row
+    was deleted, while ``tier='cold'`` means it is only demoted to a pseudo-deleted
+    state that can still be revived by a hit.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    additions = (
+        ("probe", "TEXT"),
+        ("slot_key", "TEXT"),
+        ("tier", "TEXT NOT NULL DEFAULT 'hot'"),
+        ("importance", "REAL NOT NULL DEFAULT 0.5"),
+        ("hits", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_hit_at", "REAL"),
+        ("updated_at", "REAL"),
+    )
+    for name, ddl in additions:
+        if name not in columns:
+            conn.execute(f"ALTER TABLE memory_chunks ADD COLUMN {name} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_owner_tier ON memory_chunks(owner_user_id, tier)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_owner_slot ON memory_chunks(owner_user_id, slot_key)"
+    )
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply all local migrations and return the resulting schema version."""
+
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if current > SCHEMA_VERSION:
         raise RuntimeError(f"unsupported_schema_version:{current}")
-    if current < 1:
-        _create_schema(conn)
-        _ensure_user_status(conn)
-        _make_user_nullable(conn)
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        conn.commit()
-    else:
-        _create_schema(conn)
-        _ensure_user_status(conn)
-        _make_user_nullable(conn)
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        conn.commit()
+    # Every step below is idempotent (CREATE IF NOT EXISTS / add-missing-column),
+    # so a fresh database and an existing one follow the same path.
+    _create_schema(conn)
+    _ensure_user_status(conn)
+    _ensure_memory_columns(conn)
+    _make_user_nullable(conn)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
     return SCHEMA_VERSION

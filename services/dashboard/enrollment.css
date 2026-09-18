@@ -1,1 +1,24 @@
 [hidden]{display:none!important}button:disabled{opacity:.45;cursor:not-allowed}.actions{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}blockquote{background:#eef8f5;border-left:4px solid #26ad8a;padding:18px;margin:12px 0;line-height:1.8;font-size:18px}meter{width:100%;height:16px}audio{width:100%;margin:12px 0}#record-status,#enrollment-status{line-height:1.6}#voice-status{color:#617087;font-size:13px}#user-detail{display:block;margin:12px 0;color:#147e64}#asr-auto{display:inline;width:auto}#toast{max-width:420px;z-index:100;line-height:1.6}dialog{border:1px solid #dce3ed;border-radius:16px;padding:24px;max-width:480px;width:90%}dialog::backdrop{background:#15213780}.profile-fields label{display:block;margin:14px 0}.profile-fields input,.profile-fields select{padding:10px;width:100%;margin-top:6px;border:1px solid #dce3ed;border-radius:8px}.danger{background:#a63242;color:white;border:0;border-radius:8px;padding:10px 14px;cursor:pointer}.notice{padding:12px;background:#eef8f5;border-radius:8px;margin:12px 0}.error{color:#a63242}
+.memory-tiers{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px}
+.memory-chip{background:#eef2f8;color:#3d4c66;border-radius:999px;padding:6px 11px;font-size:12px;font-weight:600}
+.memory-chip.muted{background:#f4f6fa;color:#7b879b;font-weight:500}
+.memory-chip.warn{background:#ffe2e4;color:#b44250}
+.memory-row{border:1px solid #e6ebf2;border-radius:12px;padding:14px;margin:10px 0;background:#fff}
+.memory-row.muted{background:#fafbfd}
+.memory-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px}
+.memory-text{margin:8px 0 0;line-height:1.7}
+.memory-row .muted{color:#7b879b;font-size:12px}
+.memory-row .warn{color:#b44250}
+.tier-badge{border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700;cursor:help}
+.t-slot{background:#ddf7ea;color:#128156}
+.t-hot{background:#fff3d8;color:#a86d00}
+.t-cold{background:#eceff4;color:#6b7688}
+.memory-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.memory-actions button{border:1px solid #dce3ed;background:#fff;color:#3d4c66;border-radius:8px;padding:7px 11px;cursor:pointer;font-size:12px}
+.memory-actions button:hover{background:#f4f7fb}
+.memory-actions button.danger{background:#a63242;border-color:#a63242;color:#fff}
+.memory-actions button.danger:hover{background:#8d2937}
+.memory-form{margin-top:18px;border-top:1px solid #e6ebf2;padding-top:16px}
+.memory-form h3{margin:0 0 10px;font-size:14px}
+.memory-form label{display:block;font-size:12px;color:#617087;margin:12px 0}
+.memory-form input{width:100%;display:block;margin-top:6px;border:1px solid #dce3ed;border-radius:8px;padding:10px;font:inherit}

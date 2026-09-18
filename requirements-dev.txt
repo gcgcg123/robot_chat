@@ -1,0 +1,4 @@
+# Development-only dependencies. The runtime set stays in requirements.txt, so a
+# deployment install never pulls a test runner.
+-r requirements.txt
+pytest>=8,<10

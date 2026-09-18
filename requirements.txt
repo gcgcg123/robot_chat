@@ -6,4 +6,9 @@ python-multipart>=0.0.9,<1
 faster-whisper>=1.1,<2
 # SenseVoice-Small ONNX backend (ASR_PROVIDER=sensevoice). CPU wheels only; no torch.
 sherpa-onnx>=1.13,<2
+# Long-term memory recall. Both already arrive transitively (sherpa-onnx pulls
+# onnxruntime, faster-whisper pulls tokenizers) but memory must not silently break
+# if either backend is dropped, so they are declared here as well.
+onnxruntime>=1.17,<2
+tokenizers>=0.15,<1
 

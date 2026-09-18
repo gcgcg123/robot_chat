@@ -32,17 +32,39 @@ cost, and because it keeps Cantonese accurate instead of trading it away.
 Keep this backend if you need its slightly higher accuracy and can afford the
 latency, or if you run on a machine with a real CUDA GPU.
 
+## Always installed: BGE-small-zh-v1.5 (ONNX)
+
+- Repository: `Xenova/bge-small-zh-v1.5`
+- Target: `models/embedding/bge-small-zh-v1.5`
+- Runtime: `onnxruntime` + `tokenizers` (no torch)
+- Size: **~90 MB** (`onnx/model.onnx`, 512-dim output)
+- Selection: `IOT_EMBEDDING_MODEL_PATH`, defaulting to the directory above
+
+This one is not an ASR backend and there is nothing to choose: the long-term
+memory flywheel embeds every stored probe and every new question, and uses the
+cosine similarity between them to decide whether a memory is relevant enough to
+inject. Measured separation on this machine with the calibrated floor (`0.68`):
+real matches score `0.78-1.00`, unrelated questions `0.38-0.58`.
+
+It is optional only in the sense that the service still starts without it. In
+that case scoring falls back to lexical similarity (character bigrams), which
+still works but is noticeably weaker for Chinese paraphrases, so memory recall
+becomes hit-or-miss. Download it.
+
 ## Downloading
 
 ```powershell
-# default backend (SenseVoice, ~228 MB)
+# default ASR backend (SenseVoice, ~228 MB)
 .\scripts\download-model.ps1
 
 # the faster-whisper baseline instead (~1.5 GB)
 .\scripts\download-model.ps1 -Model whisper
 
-# both
+# both ASR backends
 .\scripts\download-model.ps1 -Model both
+
+# the memory embedding model (~90 MB, needed by whichever backend you use)
+.\scripts\download-model.ps1 -Model embedding
 ```
 
 The script prefers the Hugging Face `hf` / `huggingface-cli` executable next to
@@ -55,8 +77,8 @@ Behind a slow or blocked connection, point it at a mirror:
 .\scripts\download-model.ps1 -Endpoint https://hf-mirror.com
 ```
 
-`一鍵安裝並啟動.bat` runs this automatically for the configured backend and
-skips the download when the model is already present.
+`一鍵安裝並啟動.bat` runs this automatically for the configured backend plus the
+embedding model, and skips whichever download is already present.
 
 ## Verifying
 

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("sensevoice", "whisper", "both")]
+    [ValidateSet("sensevoice", "whisper", "embedding", "both")]
     [string]$Model = "sensevoice",
     # Optional Hugging Face mirror, e.g. https://hf-mirror.com. Defaults to HF_ENDPOINT.
     [string]$Endpoint = "",
@@ -28,6 +28,17 @@ $catalog = @{
         Files     = @("config.json", "model.bin", "preprocessor_config.json", "tokenizer.json", "vocabulary.json")
         Primary   = "model.bin"
         Runtime   = "faster-whisper (ASR_PROVIDER=whisper)"
+    }
+    # Not an ASR backend: the long-term memory flywheel needs these vectors to
+    # decide whether a stored memory is relevant to the current question. 90 MB
+    # int8-free ONNX graph, run through onnxruntime (already present for VAD),
+    # so no torch is installed for it.
+    "embedding" = @{
+        RepoId    = "Xenova/bge-small-zh-v1.5"
+        TargetDir = "models\embedding\bge-small-zh-v1.5"
+        Files     = @("onnx/model.onnx", "tokenizer.json")
+        Primary   = "onnx/model.onnx"
+        Runtime   = "onnxruntime (IOT_EMBEDDING_MODEL_PATH)"
     }
 }
 
@@ -85,6 +96,7 @@ foreach ($name in $wanted) {
     Write-Host "  -> $destination" -ForegroundColor Green
     Write-Host "  $($entry.Primary) SHA-256: $hash"
     Write-Host "  runtime: $($entry.Runtime)"
+    if ($name -eq "embedding") { Write-Host "  note: onnx\model.onnx is ~90 MB; without it the robot still talks, it just stops remembering." -ForegroundColor DarkGray }
 }
 
 Write-Host "`nReview each model card and license before redistribution. Weights remain ignored by Git." -ForegroundColor DarkGray

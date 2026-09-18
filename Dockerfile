@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DATABASE_PATH=/var/lib/iotgroup5/emotional_robot.sqlite3 \
     ASR_PROVIDER=sensevoice \
     ASR_SENSEVOICE_MODEL_PATH=/models/asr/sensevoice-small \
-    ASR_MODEL_PATH=/models/asr/whisper-large-v3-turbo-ct2
+    ASR_MODEL_PATH=/models/asr/whisper-large-v3-turbo-ct2 \
+    IOT_EMBEDDING_MODEL_PATH=/models/embedding/bge-small-zh-v1.5
 
 WORKDIR /app
 COPY requirements.txt .

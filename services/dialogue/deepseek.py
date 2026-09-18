@@ -39,11 +39,17 @@ def _normalize(value: Any, aliases: dict[str, set[str]]) -> str | None:
 
 
 def extract_structured(content: str) -> dict[str, Any]:
-    """Split a trailing ``{emotion, risk, risk_evidence}`` block from model output.
+    """Split a trailing ``{emotion, risk, risk_evidence, remember}`` block from model output.
 
-    Returns ``{"text", "emotion", "risk_level", "risk_evidence"}``. Only values in
-    the fixed sets are accepted; anything else is dropped so callers can fall back
-    to their own keyword baselines. The matched block is removed from ``text``.
+    Returns ``{"text", "emotion", "risk_level", "risk_evidence", "remember"}``.
+    Only values in the fixed sets are accepted; anything else is dropped so
+    callers can fall back to their own keyword baselines. The matched block is
+    removed from ``text``.
+
+    ``remember`` is passed through **raw**: validating and approving memory
+    proposals belongs to ``services.memory.candidates``, which knows the storage
+    contract. Riding along in this block is what makes memory extraction free --
+    it shares the one model call the turn already makes.
     """
     text = (content or "").strip()
     for pattern in (_FENCED_JSON, _BARE_JSON):
@@ -56,7 +62,8 @@ def extract_structured(content: str) -> dict[str, Any]:
                 continue
             emotion = _normalize(obj.get("emotion"), _EMOTION_ALIASES)
             risk = _normalize(obj.get("risk", obj.get("risk_level")), _RISK_ALIASES)
-            if emotion is None and risk is None:
+            remember = _remember_items(obj.get("remember", obj.get("memories")))
+            if emotion is None and risk is None and not remember:
                 continue
             evidence = obj.get("risk_evidence", obj.get("evidence"))
             risk_evidence = [str(item) for item in evidence] if isinstance(evidence, list) else []
@@ -65,8 +72,19 @@ def extract_structured(content: str) -> dict[str, Any]:
                 "emotion": emotion,
                 "risk_level": risk,
                 "risk_evidence": risk_evidence,
+                "remember": remember,
             }
-    return {"text": text, "emotion": None, "risk_level": None, "risk_evidence": []}
+    return {"text": text, "emotion": None, "risk_level": None, "risk_evidence": [], "remember": []}
+
+
+def _remember_items(value: Any) -> list[dict[str, Any]]:
+    """Accept either a list of proposals or a single one."""
+
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
 
 
 class DeepSeekClient:
@@ -91,7 +109,7 @@ class DeepSeekClient:
                 response.raise_for_status()
                 body = response.json(); choice = body.get("choices", [{}])[0].get("message", {}).get("content", "")
                 parsed = extract_structured(str(choice))
-                return {"text": parsed["text"], "emotion": parsed["emotion"], "risk_level": parsed["risk_level"], "risk_evidence": parsed["risk_evidence"], "model": body.get("model", self.model), "usage": body.get("usage", {}), "status": "ok", "latency_ms": int((time.perf_counter() - started) * 1000), "request_id": request_id}
+                return {"text": parsed["text"], "emotion": parsed["emotion"], "risk_level": parsed["risk_level"], "risk_evidence": parsed["risk_evidence"], "remember": parsed["remember"], "model": body.get("model", self.model), "usage": body.get("usage", {}), "status": "ok", "latency_ms": int((time.perf_counter() - started) * 1000), "request_id": request_id}
         except httpx.TimeoutException:
             return {"text": "", "model": self.model, "usage": {}, "status": "timeout", "request_id": request_id}
         except httpx.NetworkError:
