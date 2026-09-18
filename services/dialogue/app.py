@@ -424,6 +424,28 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         session_id, device_id = str(uuid.uuid4()), f"pc-sim-{uuid.uuid4().hex[:8]}"
         return {"session_id": session_id, "device_id": device_id, "expires_in": 600, "capabilities": {"mic": True, "speaker": True, "display": {"width": 320, "height": 240}, "playback_ack": True, "enrollment_v1": True}}
 
+    @application.get("/api/simulator/preferences")
+    def get_simulator_preferences(request: Request):
+        with db() as conn:
+            actor_id = admin_auth(request, conn)
+            row = conn.execute("SELECT selected_user_id FROM simulator_preferences WHERE actor_id=?", (actor_id,)).fetchone()
+            return {"selected_user_id": row["selected_user_id"] if row else None}
+
+    @application.put("/api/simulator/preferences")
+    def set_simulator_preferences(payload: dict[str, Any], request: Request):
+        with db() as conn:
+            actor_id = admin_auth(request, conn, write=True)
+            selected = payload.get("selected_user_id")
+            if selected:
+                if not get_user(conn, selected): raise HTTPException(status_code=404, detail="user_not_found")
+            conn.execute(
+                "INSERT INTO simulator_preferences(actor_id,selected_user_id,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(actor_id) DO UPDATE SET selected_user_id=excluded.selected_user_id, updated_at=excluded.updated_at",
+                (actor_id, selected, time.time()),
+            )
+            conn.commit()
+            return {"ok": True, "selected_user_id": selected}
+
     @application.get('/api/enrollment-languages')
     def enrollment_languages(request: Request):
         with db() as conn: admin_auth(request, conn)
@@ -434,7 +456,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         with db() as conn: admin_auth(request, conn, write=True)
         item = application.state.enrollment_service.items.get(enrollment_id)
         if not item: raise HTTPException(status_code=404, detail='enrollment_not_found')
-        item.state = 'canceled'; item.samples.clear()
+        item.state = 'canceled'
         return {'ok': True}
 
     @application.post("/api/enrollments", status_code=201)
@@ -445,30 +467,42 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             if not user:
                 raise HTTPException(status_code=404, detail="user_not_found")
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
+            saved_steps = [r["step"] for r in conn.execute("SELECT step FROM voiceprint_samples WHERE user_id=? ORDER BY step", (payload.user_id,)).fetchall()]
         item = application.state.enrollment_service.start(payload.user_id, payload.language)
         application.state.enrollment_service.transition(item.enrollment_id, "collecting_samples")
-        return {"enrollment_id": item.enrollment_id, "user_id": item.user_id, "state": "collecting_samples", "required_samples": 3, "expires_at": item.expires_at, 'language': item.language, 'prompts': LANGUAGES[item.language]['prompts']}
+        return {"enrollment_id": item.enrollment_id, "user_id": item.user_id, "state": "collecting_samples", "required_samples": 3, "expires_at": item.expires_at, 'language': item.language, 'prompts': LANGUAGES[item.language]['prompts'], "sample_count": len(saved_steps), "saved_steps": saved_steps}
 
     @application.post("/api/enrollments/{enrollment_id}/samples")
     async def enrollment_sample(enrollment_id: str, request: Request, file: UploadFile = File(...), step: int | None = Form(default=None)):
         with db() as conn: admin_auth(request, conn, write=True)
         item = application.state.enrollment_service.items.get(enrollment_id)
         if not item: raise HTTPException(status_code=404, detail="enrollment_not_found")
+        if step is None or not 1 <= step <= 3:
+            raise HTTPException(status_code=422, detail="invalid_sample_step")
         sample = await file.read()
         if len(sample) > 10 * 1024 * 1024: raise HTTPException(status_code=413, detail="audio_too_large")
         if len(sample) < 1000: raise HTTPException(status_code=422, detail="sample_too_short")
         try:
+            application.state.enrollment_service.collecting(enrollment_id)
             normalized = normalize_audio(sample, file.content_type or '')
             quality = check_quality(normalized, enrollment=True)
             if normalized.duration_ms > 20_000:
                 raise ValueError('audio_too_long')
             if not quality['accepted']: raise ValueError(quality['reason'])
-            application.state.enrollment_service.add_sample(enrollment_id, normalized.pcm16, step)
+            embedding = application.state.voiceprint_provider.embed(normalized.pcm16)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        item = application.state.enrollment_service.items[enrollment_id]
+        sample_id, now = str(uuid.uuid4()), time.time()
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO voiceprint_samples(sample_id,user_id,step,embedding_json,quality_json,model_version,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,step) DO UPDATE SET sample_id=excluded.sample_id, embedding_json=excluded.embedding_json, quality_json=excluded.quality_json, model_version=excluded.model_version, updated_at=excluded.updated_at",
+                (sample_id, item.user_id, step, seal(embedding), json.dumps(quality, ensure_ascii=False), "pc-baseline-v2", now, now),
+            )
+            conn.commit()
+            sample_count = conn.execute("SELECT COUNT(*) FROM voiceprint_samples WHERE user_id=?", (item.user_id,)).fetchone()[0]
         quality.update({'duration_ms': normalized.duration_ms, 'status': 'accepted'})
-        return {"enrollment_id": enrollment_id, "state": item.state, "sample_count": len(item.samples), "quality": quality}
+        return {"enrollment_id": enrollment_id, "state": item.state, "sample_count": sample_count, "step": step, "quality": quality}
 
     @application.post("/api/enrollments/{enrollment_id}/complete")
     def complete_enrollment(enrollment_id: str, request: Request):
@@ -479,23 +513,25 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             with db() as conn:
                 if not get_user(conn, item.user_id): raise HTTPException(status_code=404, detail='user_not_found')
             return item.result
-        if len(item.samples) < 3: raise HTTPException(status_code=422, detail="insufficient_samples")
+        with db() as conn:
+            user = get_user(conn, item.user_id)
+            if not user: raise HTTPException(status_code=404, detail='user_not_found')
+            if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
+            rows = conn.execute("SELECT step, embedding_json FROM voiceprint_samples WHERE user_id=? ORDER BY step", (item.user_id,)).fetchall()
+        if len(rows) < 3: raise HTTPException(status_code=422, detail="insufficient_samples")
         try:
             application.state.enrollment_service.collecting(enrollment_id)
-            vectors = [application.state.voiceprint_provider.embed(sample) for sample in item.samples]
+            vectors = [open_sealed(row["embedding_json"]) for row in rows]
             embedding = [sum(values) / len(values) for values in zip(*vectors)]
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         template_id = str(uuid.uuid4()); now = time.time()
         with db() as conn:
-            user = get_user(conn, item.user_id)
-            if not user: raise HTTPException(status_code=404, detail='user_not_found')
-            if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
             conn.execute("UPDATE voiceprint_templates SET active=0 WHERE user_id=?", (item.user_id,))
             conn.execute('UPDATE users SET enrollment_language=? WHERE user_id=?', (item.language, item.user_id))
             conn.execute("INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)", (template_id, item.user_id, seal(embedding), "pc-baseline-v2", 1, now))
-            conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(item.samples), "template_id": template_id})
-        item.state = "completed"; item.samples.clear()
+            conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(rows), "template_id": template_id})
+        item.state = "completed"
         item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_id, "model_version": "pc-baseline-v2"}
         return item.result
 
@@ -518,6 +554,14 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             return {"decision": result.decision, "user_id": result.user_id, "best_score": result.best_score, "second_score": result.second_score, "template_id": result.template_id, "provider": result.provider}
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @application.get("/api/users/{user_id}/voiceprint/samples")
+    def voiceprint_samples(user_id: str, request: Request):
+        with db() as conn:
+            admin_auth(request, conn)
+            if not get_user(conn, user_id): raise HTTPException(status_code=404, detail="user_not_found")
+            rows = conn.execute("SELECT step, quality_json, model_version, updated_at FROM voiceprint_samples WHERE user_id=? ORDER BY step", (user_id,)).fetchall()
+            return [{"step": r["step"], "quality": json.loads(r["quality_json"] or "{}"), "model_version": r["model_version"], "updated_at": r["updated_at"]} for r in rows]
 
     @application.get("/api/media/{media_id}")
     def media(media_id: str, request: Request):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -74,6 +74,16 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             analysis_status TEXT NOT NULL, review_status TEXT NOT NULL DEFAULT 'unreviewed',
             evidence_json TEXT NOT NULL, created_at REAL NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS voiceprint_samples (
+            sample_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, step INTEGER NOT NULL,
+            embedding_json TEXT NOT NULL, quality_json TEXT NOT NULL DEFAULT '{}',
+            model_version TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            UNIQUE(user_id, step),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS simulator_preferences (
+            actor_id TEXT PRIMARY KEY, selected_user_id TEXT, updated_at REAL NOT NULL
         );
         """
     )
