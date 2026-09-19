@@ -16,6 +16,22 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "launcher-common.ps1")
+
+function Repair-ProcessEnvironmentPath {
+    <#
+        Start-Process fails when the current Windows process contains both
+        "PATH" and "Path" entries. Some shells (notably Codex/agent launchers)
+        produce that duplicate block. Normalise the current process to a single
+        "Path" entry before any child process is launched.
+    #>
+    $pathValue = $env:Path
+    [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+    [Environment]::SetEnvironmentVariable("Path", $null, "Process")
+    [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+}
+
+Repair-ProcessEnvironmentPath
+
 $configPath = Join-Path $projectRoot "configs\launcher.json"
 $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
 $hostAddress = [string]$config.host
@@ -30,6 +46,30 @@ if (-not $DataDir) { $DataDir = if ($env:IOT_DATA_DIR) { $env:IOT_DATA_DIR } els
 $venvPython = Resolve-ProjectPython -ProjectRoot $projectRoot -Quiet
 $dashboardUrl = "http://${hostAddress}:${actualPort}/dashboard"
 $healthUrl = "http://${hostAddress}:${actualPort}/health"
+
+function Resolve-AsrProvider {
+    <#
+        Keep the configured SenseVoice preference when its model is present;
+        otherwise fall back to Whisper so the launcher still starts on a
+        checkout that only has the Whisper checkpoint.
+    #>
+    $configured = if ($config.asr_provider) { [string]$config.asr_provider } else { "whisper" }
+    if ($configured -ne "sensevoice") { return $configured }
+
+    $sensePath = if ($config.asr_sensevoice_model_path) {
+        [string]$config.asr_sensevoice_model_path
+    } else {
+        "models\asr\sensevoice-small"
+    }
+    if (-not [System.IO.Path]::IsPathRooted($sensePath)) {
+        $sensePath = Join-Path $projectRoot $sensePath
+    }
+    $probe = Join-Path $sensePath "model.int8.onnx"
+    if (Test-Path -LiteralPath $probe) { return "sensevoice" }
+
+    Write-Host "SenseVoice model not found; falling back to Whisper ASR for this launch." -ForegroundColor Yellow
+    return "whisper"
+}
 
 if (-not $CheckOnly -and (-not $venvPython -or -not (Test-Path -LiteralPath $venvPython))) {
     throw "No Python interpreter found. Run the first-time setup batch file, set IOT_PYTHON, or fill in 'python' in configs\launcher.json."
@@ -46,7 +86,7 @@ if ($CheckOnly) {
         (Join-Path $DataDir ("secrets\simulator-{0}.token" -f $deviceIdForCheck))
     )
     $simulatorTokenConfigured = -not [string]::IsNullOrWhiteSpace($DeviceToken) -or ($tokenCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
-    $asrProviderForCheck = if ($config.asr_provider) { [string]$config.asr_provider } else { "whisper" }
+    $asrProviderForCheck = Resolve-AsrProvider
     if ($asrProviderForCheck -eq "sensevoice") {
         $asrModelPathForCheck = [string]$config.asr_sensevoice_model_path
         $asrModelFileForCheck = "model.int8.onnx"
@@ -115,7 +155,8 @@ $env:DEEPSEEK_MODEL = [string]$config.deepseek_model
 # The ASR backend selection lives in the tracked launcher config rather than in
 # .env (which is gitignored and never created by setup), so a fresh clone runs
 # the intended backend instead of silently falling back to the default.
-if ($config.asr_provider) { $env:ASR_PROVIDER = [string]$config.asr_provider }
+$effectiveAsrProvider = Resolve-AsrProvider
+if ($effectiveAsrProvider) { $env:ASR_PROVIDER = $effectiveAsrProvider }
 if ($config.asr_sensevoice_model_path) { $env:ASR_SENSEVOICE_MODEL_PATH = [string]$config.asr_sensevoice_model_path }
 if ($config.asr_whisper_model_path) { $env:ASR_MODEL_PATH = [string]$config.asr_whisper_model_path }
 if ($config.asr_device) { $env:ASR_DEVICE = [string]$config.asr_device }
