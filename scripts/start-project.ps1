@@ -54,8 +54,12 @@ if ($CheckOnly) {
         $asrModelPathForCheck = [string]$config.asr_whisper_model_path
         $asrModelFileForCheck = "model.bin"
     }
-    $asrRelativeForCheck = $asrModelPathForCheck.TrimStart(".", "/", "\")
-    $asrModelProbeForCheck = Join-Path (Join-Path $projectRoot $asrRelativeForCheck) $asrModelFileForCheck
+    $asrDirectoryForCheck = if ([System.IO.Path]::IsPathRooted($asrModelPathForCheck)) {
+        $asrModelPathForCheck
+    } else {
+        Join-Path $projectRoot $asrModelPathForCheck
+    }
+    $asrModelProbeForCheck = Join-Path $asrDirectoryForCheck $asrModelFileForCheck
     [ordered]@{
         ready = $true
         project_root = $projectRoot
@@ -129,6 +133,26 @@ function Test-Health {
     }
 }
 
+function Test-HeartbeatReady([string]$ExpectedRun) {
+    try {
+        $status = Get-Content -Raw -LiteralPath (Join-Path $LogDir "heartbeat-status.json") | ConvertFrom-Json
+        $reportedAt = if ($status.time -is [datetime]) { [DateTimeOffset]$status.time } else { [DateTimeOffset]::Parse([string]$status.time, [Globalization.CultureInfo]::InvariantCulture) }
+        $age = ([DateTimeOffset]::UtcNow - $reportedAt).TotalSeconds
+        $recent = $age -ge 0 -and $age -lt ([Math]::Max(30, [int]$config.heartbeat_interval_seconds + 15))
+        return $status.run_id -eq $ExpectedRun -and $status.state -eq "ready" -and $recent
+    } catch { return $false }
+}
+
+function Write-HeartbeatFailure([string]$Reason) {
+    $diagnostic = [ordered]@{ time = [DateTimeOffset]::UtcNow.ToString("o"); run_id = $runId; reason = $Reason; exit_code = $heartbeatProcess.ExitCode }
+    $path = Join-Path $LogDir "startup-error.json"
+    [System.IO.File]::WriteAllText($path, ($diagnostic | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "Heartbeat startup failed: $Reason. Details: $path" -ForegroundColor Red
+    $tail = Get-Content -Tail 8 -LiteralPath (Join-Path $LogDir "heartbeat-error.log") -ErrorAction SilentlyContinue
+    if ($tail) { $tail | ForEach-Object { Write-Host $_ } }
+    else { Write-Host "No Python stderr was produced. Check startup-error.json for the process exit code." }
+}
+
 $serviceStateFile = Join-Path $RuntimeDir "service.json"
 $heartbeatStateFile = Join-Path $RuntimeDir "heartbeat.json"
 $lockFile = Join-Path $RuntimeDir "start.lock"
@@ -141,10 +165,11 @@ try {
     if ($existing -and (Test-Health)) {
         Write-Host "The service is already running: $dashboardUrl" -ForegroundColor Green
         $heartbeatOwned = Get-OwnedProcess -StateFile $heartbeatStateFile -ExpectedRole "heartbeat"
-        if ($NoHeartbeat -or $heartbeatOwned) {
+        if ($NoHeartbeat -or (-not [bool]$config.heartbeat_enabled) -or ($heartbeatOwned -and (Test-HeartbeatReady $heartbeatOwned.State.run_id))) {
             if (-not $NoBrowser -and [bool]$config.open_browser) { Start-Process $dashboardUrl }
             exit 0
         }
+        if ($heartbeatOwned) { Stop-OwnedProcess -StateFile $heartbeatStateFile -ExpectedRole "heartbeat" | Out-Null }
         # Reuse the verified backend and only repair the missing heartbeat.
         $reuseService = $true
         $serviceProcess = $existing.Process
@@ -184,8 +209,9 @@ try {
 
 $heartbeatEnabled = [bool]$config.heartbeat_enabled -and -not $NoHeartbeat
 if ($heartbeatEnabled) {
+    $runId = [guid]::NewGuid().ToString("N")
     # Module invocation and explicit argument quoting also work from paths with spaces.
-    $heartbeatArguments = @("-m", "simulator.heartbeat", "--url", "http://${hostAddress}:${actualPort}/api/device/heartbeat", "--device-id", [string]$config.simulator_device_id, "--interval", ([int]$config.heartbeat_interval_seconds).ToString())
+    $heartbeatArguments = @("-u", "-m", "simulator.heartbeat", "--url", "http://${hostAddress}:${actualPort}/api/device/heartbeat", "--device-id", [string]$config.simulator_device_id, "--interval", ([int]$config.heartbeat_interval_seconds).ToString(), "--status-file", (Join-Path $LogDir "heartbeat-status.json"), "--run-id", $runId)
     if ([string]::IsNullOrWhiteSpace($DeviceToken)) {
         # The local helper renews only this device's session, including during long runs.
         $heartbeatArguments += @("--local-data-dir", $DataDir)
@@ -198,21 +224,26 @@ if ($heartbeatEnabled) {
     try {
         Write-OwnedProcessState -StateFile $heartbeatStateFile -Process $heartbeatProcess -Role "heartbeat" -CommandContains "simulator.heartbeat" -RunId $runId
     } catch {
+        Write-HeartbeatFailure "process_inspection_failed"
         Stop-ProcessTree -TargetProcessId $heartbeatProcess.Id
         if ($startedServiceHere) { Stop-OwnedProcess -StateFile $serviceStateFile -ExpectedRole "service" | Out-Null }
         throw
     }
-    # heartbeat.py sends its first request immediately.  An exited child here
-    # means authentication/transport failed; do not report a false "started"
-    # state or leave an orphan backend behind.
-    for ($probe = 0; $probe -lt 15; $probe++) {
+    # A live process alone does not prove delivery. Wait for this run's receipt.
+    $heartbeatReady = $false
+    $heartbeatDeadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $heartbeatDeadline) {
+        $heartbeatProcess.Refresh()
         if ($heartbeatProcess.HasExited) { break }
+        if (Test-HeartbeatReady $runId) { $heartbeatReady = $true; break }
         Start-Sleep -Milliseconds 200
     }
-    if ($heartbeatProcess.HasExited) {
-        Remove-Item -LiteralPath $heartbeatStateFile -Force -ErrorAction SilentlyContinue
+    if (-not $heartbeatReady) {
+        $reason = if ($heartbeatProcess.HasExited) { "process_exited" } else { "no_successful_heartbeat_within_30s" }
+        Write-HeartbeatFailure $reason
+        Stop-OwnedProcess -StateFile $heartbeatStateFile -ExpectedRole "heartbeat" | Out-Null
         if ($startedServiceHere) { Stop-OwnedProcess -StateFile $serviceStateFile -ExpectedRole "service" | Out-Null }
-        throw "Simulator heartbeat failed during startup. Check logs\heartbeat-error.log and provision a valid device token."
+        throw "Simulator heartbeat did not become ready. See logs\startup-error.json, heartbeat-status.json and heartbeat-error.log."
     }
 }
 

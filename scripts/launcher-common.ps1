@@ -18,7 +18,12 @@ function Write-OwnedProcessState(
     [string]$CommandContains,
     [string]$RunId
 ) {
-    $snapshot = Get-ProcessSnapshot -TargetProcessId $Process.Id
+    $snapshot = $null
+    for ($attempt = 0; $attempt -lt 10 -and -not $snapshot; $attempt++) {
+        if ($Process.HasExited) { break }
+        $snapshot = Get-ProcessSnapshot -TargetProcessId $Process.Id
+        if (-not $snapshot) { Start-Sleep -Milliseconds 200 }
+    }
     if (-not $snapshot) { throw "Unable to inspect the newly started $Role process." }
     $state = [ordered]@{
         pid = $Process.Id
@@ -59,7 +64,11 @@ function Stop-ProcessTree([int]$TargetProcessId) {
     foreach ($child in $children) {
         Stop-ProcessTree -TargetProcessId ([int]$child.ProcessId)
     }
-    Stop-Process -Id $TargetProcessId -Force -ErrorAction SilentlyContinue
+    $process = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
+    if ($process) {
+        Stop-Process -InputObject $process -Force -ErrorAction SilentlyContinue
+        if (-not $process.WaitForExit(5000)) { throw "Timed out stopping process $TargetProcessId." }
+    }
 }
 
 function Stop-OwnedProcess([string]$StateFile, [string]$ExpectedRole) {

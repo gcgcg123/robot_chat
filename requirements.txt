@@ -11,4 +11,7 @@ sherpa-onnx>=1.13,<2
 # if either backend is dropped, so they are declared here as well.
 onnxruntime>=1.17,<2
 tokenizers>=0.15,<1
-
+# ECAPA voiceprint recognition.
+speechbrain>=1.0,<2
+torch>=2.2,<3
+torchaudio>=2.2,<3

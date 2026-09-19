@@ -137,7 +137,7 @@ def select_for_turn(
 
     shared = load_shared(conn, now=moment, settings=config)
     slots = [c for c in load_tier(conn, user_id, TIER_SLOT, now=moment, settings=config) if visible_chunk(c, identity)]
-    basic = [chunk for chunk in slots if _is_basic(chunk)]
+    basic = [chunk for chunk in slots if _is_basic(chunk)][: config.slot_top_n]
 
     # Tier pools are loaded at most once per turn, and only when some question has to
     # reach that far: a question answered from the slots never queries hot or cold.

@@ -50,17 +50,25 @@ function Get-ModelFiles {
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
     if ($Endpoint) { $env:HF_ENDPOINT = $Endpoint }
 
+    $scriptDirectories = @()
     if ($Python) {
-        $scriptsDir = Join-Path (Split-Path -Parent $Python) "Scripts"
-        foreach ($cliName in @("hf.exe", "huggingface-cli.exe")) {
-            $cli = Join-Path $scriptsDir $cliName
+        $pythonDirectory = Split-Path -Parent $Python
+        $scriptDirectories += $pythonDirectory
+        $scriptDirectories += (Join-Path $pythonDirectory "Scripts")
+    }
+    $scriptDirectories += (Join-Path $projectRoot ".venv\Scripts")
+    foreach ($cliName in @("hf.exe", "huggingface-cli.exe")) {
+        $cliCandidates = @($scriptDirectories | ForEach-Object { Join-Path $_ $cliName })
+        $pathCommand = Get-Command $cliName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pathCommand) { $cliCandidates += $pathCommand.Source }
+        foreach ($cli in ($cliCandidates | Select-Object -Unique)) {
             if (Test-Path -LiteralPath $cli) {
                 Write-Host "  using $cliName" -ForegroundColor DarkGray
                 # Pass the explicit file list: without it the CLI mirrors the whole
                 # repository, which for SenseVoice means 1.1 GB instead of 228 MB.
                 & $cli download $Repository @FileNames --local-dir $Destination
                 if ($LASTEXITCODE -eq 0) { return }
-                Write-Host "  $cliName failed; falling back to the Python API" -ForegroundColor Yellow
+                Write-Host "  $cliName failed; trying another downloader" -ForegroundColor Yellow
             }
         }
     }

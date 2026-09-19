@@ -32,6 +32,9 @@
     const name = languages[language()]?.label || language();
     $("voice-status").textContent = voiceFor(language()) ? "語音回覆：" + name + "（瀏覽器音色）" : "本機未提供" + name + "音色；可查看字幕，請安裝對應系統語音後重開瀏覽器。";
   }
+  function identifiedUser(text, kind = "known") {
+    screen?.setUser(text);
+  }
   function speak(text, code) {
     const voice = voiceFor(code);
     if (!voice) {toast("沒有此語言的語音音色，請按文字朗讀；回覆仍可查看字幕。"); return;}
@@ -46,12 +49,17 @@
     $("new-user").disabled = locked;
     $("enroll-language").disabled = locked;
     $("enroll-start").disabled = locked || !selectedUser || !session;
-    $("conversation-record").disabled = !!enrollment || uploading || opening || !selectedUser || !session || (chatting && !recording);
+    $("conversation-record").disabled = !!enrollment || uploading || opening || !session || (chatting && !recording);
     $("enroll-record").disabled = uploading || (!stopRecording && recording);
     $("enroll-confirm").disabled = recording || uploading || (!preview && savedSteps.size !== 3);
     $("enroll-cancel").disabled = recording || uploading;
     $("read-example").disabled = recording || uploading;
     $("stop-playback").disabled = !chatting;
+    const nextStep = [1,2,3].find(step => !savedSteps.has(step));
+    document.querySelectorAll("#step-buttons button").forEach(button => {
+      const step = Number(button.dataset.step);
+      button.disabled = !enrollment || recording || uploading || (!savedSteps.has(step) && step !== nextStep);
+    });
   }
   function clearPreview() {
     $("sample-preview").pause();
@@ -71,7 +79,8 @@
     document.querySelectorAll("#step-buttons button").forEach(b => {
       const s = Number(b.dataset.step);
       b.classList.toggle("done", savedSteps.has(s));
-      b.classList.toggle("active", s === step && !savedSteps.has(s));
+      b.classList.toggle("active", s === step);
+      b.setAttribute("aria-pressed", String(s === step));
     });
     controls();
   }
@@ -100,8 +109,10 @@
   }
   async function refreshSamples() {
     if(!selectedUser) return;
+    const userId = selectedUser;
     try {
-      const samples = await api("/api/users/"+encodeURIComponent(selectedUser)+"/voiceprint/samples");
+      const samples = await api("/api/users/"+encodeURIComponent(userId)+"/voiceprint/samples");
+      if(userId !== selectedUser || enrollment || opening) return;
       savedSteps = new Set(samples.map(s => s.step));
       $("enrollment-status").textContent = savedSteps.size ? "此使用者已保存 " + savedSteps.size + " / 3 段聲紋。" : "先選擇使用者。";
       stepView();
@@ -187,17 +198,27 @@
       chatting=true;controls();$("turn-status").textContent="語音辨識中…";
       screen.setState("transcribing");
       try{
-        // Reload the profile so a preference edited in another page applies.
-        const fresh=await api("/api/users/"+encodeURIComponent(selectedUser));
-        users=users.map(u=>u.user_id===selectedUser?fresh:u);voiceStatus();
         const form=new FormData();form.append("file",blob,"turn.wav");
+        const identity=await api("/api/voiceprint/identify",{method:"POST",body:form});
+        if(identity.decision!=="accepted") {
+            identifiedUser(identity.decision==="ambiguous"?"未錄入（無法唯一確認）":"未錄入","unknown");
+          throw Error(identity.decision==="ambiguous"?"聲紋無法唯一辨識，請重新錄音。":"聲紋庫中沒有此使用者，請先完成聲紋登記。");
+        }
+        selectedUser=identity.user_id;
+        const identified=users.find(u=>u.user_id===identity.user_id);
+        identifiedUser(identified?.display_name || identity.user_id);
+        $("user-select").value=selectedUser;
+        $("turn-status").textContent="聲紋已確認，語音辨識中…";
+        // Reload the profile so a preference edited in another page applies.
+        const fresh=await api("/api/users/"+encodeURIComponent(identity.user_id));
+        users=users.map(u=>u.user_id===identity.user_id?fresh:u);voiceStatus();
         if(!$("asr-auto").checked) form.append("language",languages[language()].asr);
         const transcript=await api("/api/transcribe",{method:"POST",body:form});
         if(screen.epoch!==epoch)return;
         if(!transcript.text?.trim())throw Error("沒有辨識到語音，請重試。");
         if(!socket || socket.readyState!==WebSocket.OPEN)throw Error("連線已中斷，請重新整理頁面。");
         $("captions").textContent=transcript.text;$("turn-status").textContent="等待回覆…";
-        socket.send(JSON.stringify({type:"chat",request_id:screen.requestId,text:transcript.text,user_id:selectedUser,device_id:session.device_id}));
+        socket.send(JSON.stringify({type:"chat",request_id:screen.requestId,text:transcript.text,user_id:identity.user_id,voiceprint_id:identity.template_id,device_id:session.device_id}));
       }catch(e){if(screen.epoch!==epoch)return;chatting=false;screen.fail(message(e));$("turn-status").textContent=message(e);toast(message(e));controls();}
     }
   }
@@ -246,10 +267,15 @@
     try{
       const auth=await api("/api/auth/session");window.__iotCsrf=auth.csrf_token;
       languages=await api("/api/enrollment-languages");
-      selectedUser=new URLSearchParams(location.search).get("user")||"";await loadUsers();
+      selectedUser=new URLSearchParams(location.search).get("user")||"";
+      if(!selectedUser){
+        const preference=await api("/api/simulator/preferences");
+        selectedUser=preference.selected_user_id||"";
+      }
+      await loadUsers();await refreshSamples();
       session=await api("/api/simulator/sessions",{method:"POST"});
       socket=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/ws/simulator/"+session.session_id);
-      socket.onopen=()=>{screen.begin();$("connection").textContent="語音連線已就緒";$("connection").className="state ok";$("turn-status").textContent="請選擇使用者後開始";controls();};
+      socket.onopen=()=>{screen.begin();identifiedUser("未錄入","unknown");$("connection").textContent="語音連線已就緒";$("connection").className="state ok";$("turn-status").textContent="請開始說話，系統會自動辨識使用者";controls();};
       socket.onclose=()=>{stopRecording?.();screen.offline();session=null;chatting=false;$("connection").textContent="連線中斷，請重新整理";$("connection").className="state error";controls();};
       socket.onerror=()=>{screen.offline("WebSocket 連線失敗，請重新整理");toast("WebSocket 連線失敗，請檢查後端。");};
       socket.onmessage=event=>{
@@ -278,6 +304,12 @@
     }catch(e){toast(message(e));}finally{uploading=false;button.disabled=false;controls();}
   };
   $("enroll-start").onclick=startEnrollment;
+  document.querySelectorAll("#step-buttons button").forEach(button => {
+    button.onclick=()=>{
+      if(button.disabled || !enrollment || recording || uploading)return;
+      editingStep=Number(button.dataset.step);clearPreview();stepView();
+    };
+  });
   $("enroll-record").onclick=()=>record("enroll");
   $("enroll-confirm").onclick=confirmSample;
   $("enroll-cancel").onclick=cancelEnrollment;

@@ -399,11 +399,16 @@ def upsert_memory(
         keep_verified_text = bool(existing["approved"]) and not bool(approved)
         merged_text = existing["text"] if keep_verified_text else text
         merged_probe = existing["probe"] if keep_verified_text else probe_value
+        # A vector is valid only for the probe that produced it. Preserve both
+        # when rejecting a proposal; clear stale vectors to allow lexical recall.
+        merged_embedding = encoded
+        if keep_verified_text or (encoded is None and merged_probe == existing["probe"]):
+            merged_embedding = existing["embedding_json"]
         conn.execute(
             "UPDATE memory_chunks SET text=?, probe=?, slot_key=COALESCE(?, slot_key), importance=?, "
             "approved=MAX(approved, ?), active=1, updated_at=?, "
-            "embedding_json=COALESCE(?, embedding_json) WHERE chunk_id=?",
-            (merged_text, merged_probe, slot_key, merged_importance, int(bool(approved)), moment, encoded, existing["chunk_id"]),
+            "embedding_json=? WHERE chunk_id=?",
+            (merged_text, merged_probe, slot_key, merged_importance, int(bool(approved)), moment, merged_embedding, existing["chunk_id"]),
         )
         conn.commit()
         return {"chunk_id": existing["chunk_id"], "action": action, "similarity": round(similarity, 4)}

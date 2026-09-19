@@ -25,9 +25,7 @@ logs/
 runtime/
 reports/
 
-# Tests stay on disk but are not versioned, together with any generated report or
-# debug artifact. scripts/acceptance/ was removed for the same reason.
-tests/
+# Generated reports and debug artifacts.
 **/__pycache__/
 .pytest_cache/
 *.pyc

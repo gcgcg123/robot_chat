@@ -5,7 +5,7 @@
   "heartbeat_enabled": true,
   "heartbeat_interval_seconds": 10,
   "simulator_device_id": "sim-device",
-  "python": "D:\\ProgramData\\Anaconda_envs\\envs\\robot_chat\\python.exe",
+  "python": "",
   "deepseek_base_url": "https://api.deepseek.com",
   "deepseek_model": "deepseek-flash",
   "asr_provider": "sensevoice",
