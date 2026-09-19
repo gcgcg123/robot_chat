@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>管理员展示设置 · 心语</title>
+  <link rel="stylesheet" href="/dashboard-assets/dashboard.css?v=20260915-12" />
+  <link rel="stylesheet" href="/dashboard-assets/dashboard-polish.css?v=20260915-12" />
+  <link rel="stylesheet" href="/dashboard-assets/profile.css?v=20260915-12" />
+</head>
+<body>
+  <main class="profile-shell">
+    <header class="profile-header">
+      <a class="profile-back" href="/dashboard">← 退出</a>
+      <div>
+        <p class="eyebrow">个人展示设置</p>
+        <h1>修改管理员头像与昵称</h1>
+      </div>
+    </header>
+    <section class="profile-card">
+      <div class="avatar-section">
+        <span id="avatar-preview" class="profile-avatar" aria-hidden="true">管</span>
+        <label class="upload-btn" for="avatar-input">选择头像</label>
+        <input id="avatar-input" type="file" accept="image/*" hidden />
+      </div>
+      <label class="field">主页展示昵称<input id="nickname-input" maxlength="24" placeholder="仅用于主页右上角展示" /></label>
+      <p class="profile-hint">此昵称仅用于主页右上角展示，不会改变登录账号。</p>
+      <p id="profile-error" role="alert"></p>
+      <div class="profile-actions">
+        <button id="save-profile" class="primary-btn" type="button">保存</button>
+        <a class="refresh-btn" href="/dashboard">取消</a>
+      </div>
+    </section>
+  </main>
+  <script src="/dashboard-assets/profile.js?v=20260915-12"></script>
+</body>
+</html>

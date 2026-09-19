@@ -20,7 +20,7 @@ def test_dashboard_assets_exist():
     assert (ROOT / "services" / "dashboard" / "dashboard.js").exists()
 
 
-def test_login_overlay_hidden_attribute_overrides_grid_layout():
+def test_landing_overlay_hidden_attribute_overrides_grid_layout():
     html = (ROOT / "services" / "dashboard" / "index.html").read_text(encoding="utf-8")
-    assert ".login-screen[hidden]" in html
+    assert ".landing-screen[hidden]" in html
     assert "display:none!important" in html.replace(" ", "")
