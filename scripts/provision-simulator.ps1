@@ -9,16 +9,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "launcher-common.ps1")
 if (-not $TokenFile) { $TokenFile = Join-Path $DataDir "secrets\simulator.token" }
 $tokenDirectory = Split-Path -Parent $TokenFile
 New-Item -ItemType Directory -Force -Path $tokenDirectory | Out-Null
 
-$venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path -LiteralPath $venvPython)) {
-    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pythonCommand) { throw "Virtual environment not found and python is unavailable. Run 一鍵安裝並啟動.bat first." }
-    $venvPython = $pythonCommand.Source
-}
+$venvPython = Resolve-ProjectPython -ProjectRoot $projectRoot
 
 # Keep all provisioning inputs in the child environment.  The bearer token is
 # captured by PowerShell and written to the local token file, never echoed.

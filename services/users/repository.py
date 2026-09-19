@@ -51,8 +51,9 @@ def delete_user_data(conn, user_id: str) -> dict[str, int]:
     counts = {}
     conn.execute('INSERT OR IGNORE INTO deleted_users(user_id) VALUES(?)', (user_id,))
     conn.execute("UPDATE devices SET user_id=NULL WHERE user_id=?", (user_id,))
-    for table, column in (("emotion_events", "user_id"), ("conversation_analysis", "user_id"), ("risk_events", "user_id"), ("memory_chunks", "owner_user_id"), ("voiceprint_templates", "user_id"), ("conversations", "user_id"), ("audio_turns", "user_id"), ("consents", "user_id"), ("users", "user_id")):
+    for table, column in (("emotion_events", "user_id"), ("conversation_analysis", "user_id"), ("risk_events", "user_id"), ("memory_chunks", "owner_user_id"), ("voiceprint_templates", "user_id"), ("voiceprint_samples", "user_id"), ("conversations", "user_id"), ("audio_turns", "user_id"), ("consents", "user_id"), ("users", "user_id")):
         counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (user_id,)).fetchone()[0]
         conn.execute(f"DELETE FROM {table} WHERE {column}=?", (user_id,))
+    conn.execute("UPDATE simulator_preferences SET selected_user_id=NULL WHERE selected_user_id=?", (user_id,))
     conn.commit()
     return counts

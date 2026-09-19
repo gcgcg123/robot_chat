@@ -4,6 +4,25 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# services/storage/settings.py -> services -> the checkout root.  Runtime data
+# lives inside the checkout by default instead of under %LOCALAPPDATA%, so a
+# copy of the project carries its own database, simulator token and backups.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_DIR_NAME = "IoTGroup5"
+
+
+def _resolve(value: str) -> Path:
+    """Anchor a configured path to the project root when it is relative.
+
+    The shipped `.env` template uses a relative path.  Resolving it against the
+    current working directory meant that starting the service from a different
+    folder silently opened a *different* (empty) database, so relative always
+    means "relative to the checkout".
+    """
+
+    path = Path(value)
+    return path if path.is_absolute() else (PROJECT_ROOT / path)
+
 
 @dataclass(frozen=True)
 class RuntimeSettings:
@@ -28,15 +47,14 @@ class RuntimeSettings:
         data_value = os.getenv("IOT_DATA_DIR", "").strip()
         legacy = os.getenv("DATABASE_PATH", "").strip()
         if data_value:
-            data_dir = Path(data_value)
+            data_dir = _resolve(data_value)
             override = None
         elif legacy:
-            legacy_path = Path(legacy)
+            legacy_path = _resolve(legacy)
             data_dir = legacy_path.parent
             override = legacy_path
         else:
-            local_appdata = os.getenv("LOCALAPPDATA", "").strip()
-            data_dir = (Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local") / "IoTGroup5"
+            data_dir = PROJECT_ROOT / DEFAULT_DATA_DIR_NAME
             override = None
         testing = os.getenv("IOT_TESTING", "").strip().lower() in {"1", "true", "yes", "on"}
         return cls(data_dir=data_dir, testing=testing, database_override=override)

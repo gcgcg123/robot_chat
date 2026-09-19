@@ -1,7 +1,8 @@
 (function () {
   const $ = id => document.getElementById(id);
   let users = [], languages = {}, session, socket, enrollment, preview, previewUrl;
-  let selectedUser = "", saved = 0, recording = false, uploading = false, chatting = false, opening = false;
+  let selectedUser = "", recording = false, uploading = false, chatting = false, opening = false;
+  let savedSteps = new Set(), editingStep = 0;
   let stopRecording, toastTimer, expiryTimer;
   const errors = {no_speech:"音量太小或沒有收到聲音，請靠近麥克風重錄。", too_short:"錄音不足 3 秒，請完整朗讀後重錄。", clipping:"音量過大造成爆音，請離麥克風稍遠。", audio_too_long:"錄音超過 20 秒，請縮短後重錄。", enrollment_expired:"登記已逾時，請取消後重新開始。", user_not_found:"使用者已被刪除，請返回列表。", user_disabled:"使用者已停用。"};
   const message = e => errors[e.message] || e.message;
@@ -49,11 +50,16 @@
     $("enroll-language").disabled = locked;
     $("enroll-start").disabled = locked || !selectedUser || !session;
     $("conversation-record").disabled = !!enrollment || uploading || opening || !session || (chatting && !recording);
-    $("enroll-record").disabled = uploading || saved === 3 || (!stopRecording && recording);
-    $("enroll-confirm").disabled = recording || uploading || (!preview && saved !== 3);
+    $("enroll-record").disabled = uploading || (!stopRecording && recording);
+    $("enroll-confirm").disabled = recording || uploading || (!preview && savedSteps.size !== 3);
     $("enroll-cancel").disabled = recording || uploading;
     $("read-example").disabled = recording || uploading;
     $("stop-playback").disabled = !chatting;
+    const nextStep = [1,2,3].find(step => !savedSteps.has(step));
+    document.querySelectorAll("#step-buttons button").forEach(button => {
+      const step = Number(button.dataset.step);
+      button.disabled = !enrollment || recording || uploading || (!savedSteps.has(step) && step !== nextStep);
+    });
   }
   function clearPreview() {
     $("sample-preview").pause();
@@ -61,13 +67,21 @@
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     preview = previewUrl = null;
   }
+  function activeStep() { return editingStep || ([1,2,3].find(s => !savedSteps.has(s)) || 1); }
   function stepView() {
-    $("sample-count").textContent = saved + " / 3";
-    $("progress-bar").style.width = saved / 3 * 100 + "%";
-    $("step-title").textContent = saved === 3 ? "三段已保存" : "第 " + (saved+1) + " / 3 步";
-    $("reading-prompt").textContent = enrollment?.prompts[Math.min(saved,2)] || "";
-    $("enroll-confirm").textContent = saved >= 2 ? "確認並完成登記" : "確認並繼續";
+    const count = savedSteps.size, step = activeStep();
+    $("sample-count").textContent = count + " / 3";
+    $("progress-bar").style.width = count / 3 * 100 + "%";
+    $("step-title").textContent = count === 3 ? "三段已保存" : "第 " + step + " / 3 步";
+    $("reading-prompt").textContent = enrollment?.prompts[step-1] || "";
+    $("enroll-confirm").textContent = count === 3 ? "確認並完成／更新登記" : "確認並保存第 " + step + " 段";
     $("enroll-record").textContent = preview ? "重新錄音" : "● 開始錄音";
+    document.querySelectorAll("#step-buttons button").forEach(b => {
+      const s = Number(b.dataset.step);
+      b.classList.toggle("done", savedSteps.has(s));
+      b.classList.toggle("active", s === step);
+      b.setAttribute("aria-pressed", String(s === step));
+    });
     controls();
   }
   async function loadUsers() {
@@ -90,14 +104,29 @@
     $("enroll-language").value = language();
     voiceStatus(); controls();
   }
+  async function savePreference() {
+    try { await api("/api/simulator/preferences", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({selected_user_id: selectedUser})}); } catch(e) {}
+  }
+  async function refreshSamples() {
+    if(!selectedUser) return;
+    const userId = selectedUser;
+    try {
+      const samples = await api("/api/users/"+encodeURIComponent(userId)+"/voiceprint/samples");
+      if(userId !== selectedUser || enrollment || opening) return;
+      savedSteps = new Set(samples.map(s => s.step));
+      $("enrollment-status").textContent = savedSteps.size ? "此使用者已保存 " + savedSteps.size + " / 3 段聲紋。" : "先選擇使用者。";
+      stepView();
+    } catch(e) {}
+  }
   async function startEnrollment() {
     if (!selectedUser || opening || enrollment) return;
     opening = true; controls(); clearPreview(); window.speechSynthesis?.cancel();
     try {
       enrollment = await api("/api/enrollments", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({user_id:selectedUser, language:$("enroll-language").value})});
-      saved = 0;
+      savedSteps = new Set(enrollment.saved_steps || []);
+      editingStep = 0;
       $("wizard").hidden = false;
-      $("enrollment-status").textContent = "請朗讀第 1 段；录完試聽，確認後才會保存。";
+      $("enrollment-status").textContent = savedSteps.size ? "已保存 " + savedSteps.size + " 段，可繼續或點選任一段重錄。" : "請朗讀第 1 段；錄完試聽，確認後才會保存。";
       $("record-status").textContent = "";
       expiryTimer = setTimeout(() => {$("enrollment-status").textContent = "登記已逾時，請取消並重新開始。"; toast("登記已逾時");}, Math.max(0, enrollment.expires_at*1000-Date.now()));
     } catch(e) {toast(message(e));}
@@ -194,23 +223,24 @@
     }
   }
   async function confirmSample() {
-    if(!enrollment || uploading || recording || (!preview && saved!==3))return;
+    if(!enrollment || uploading || recording || (!preview && savedSteps.size!==3))return;
     uploading=true;controls();
     try {
-      if(saved<3){
-        const form=new FormData(); form.append("file",preview,"sample.wav");form.append("step",String(saved+1));
+      if(preview){
+        const step=activeStep();
+        const form=new FormData(); form.append("file",preview,"sample.wav");form.append("step",String(step));
         const result=await api("/api/enrollments/"+enrollment.enrollment_id+"/samples",{method:"POST",body:form});
-        saved=result.sample_count;clearPreview();
-        $("enrollment-status").textContent=saved<3?"第 "+saved+" 段已保存，請朗讀第 "+(saved+1)+" 段。":"三段已保存，正在建立聲紋模板…";
-        toast("第 "+saved+" 段已保存"+(saved<3?"，進入第 "+(saved+1)+" 步":""));
+        savedSteps.add(step);clearPreview();editingStep=0;
+        $("enrollment-status").textContent=result.sample_count<3?"第 "+step+" 段已保存（共 "+result.sample_count+" 段）。":"三段已保存，可完成／更新模板。";
+        toast("第 "+step+" 段已保存");
         $("record-status").textContent="";
       }
-      if(saved===3){
+      if(savedSteps.size===3){
         await api("/api/enrollments/"+enrollment.enrollment_id+"/complete",{method:"POST"});
         clearTimeout(expiryTimer);enrollment=null;$("wizard").hidden=true;
-        $("enrollment-status").textContent="三步登記完成！可開始模擬對話，或到個人資料頁查看登記語言。";
-        $("enroll-start").textContent="重新登記";
-        toast("聲紋登記完成，三段錄音已確認。");await loadUsers();
+        $("enrollment-status").textContent="聲紋模板已建立／更新！可再按「開始登記」重錄任一段。";
+        $("enroll-start").textContent="重新登記／修改";
+        toast("聲紋模板已更新。");
       }
     }catch(e){$("enrollment-status").textContent=message(e);toast(message(e));}
     finally{uploading=false;stepView();}
@@ -220,8 +250,8 @@
     uploading=true;controls();
     try {
       await api("/api/enrollments/"+enrollment.enrollment_id,{method:"DELETE"});
-      enrollment=null;clearTimeout(expiryTimer);clearPreview();saved=0;$("wizard").hidden=true;
-      $("enrollment-status").textContent="已取消登記，原有聲紋保持不變。";toast("已取消登記");
+      enrollment=null;clearTimeout(expiryTimer);clearPreview();savedSteps=new Set();editingStep=0;$("wizard").hidden=true;
+      $("enrollment-status").textContent="已取消登記，已保存的聲紋段落保持不變。";toast("已取消登記");
     }catch(e){toast(message(e));}
     finally{uploading=false;stepView();}
   }
@@ -237,7 +267,12 @@
     try{
       const auth=await api("/api/auth/session");window.__iotCsrf=auth.csrf_token;
       languages=await api("/api/enrollment-languages");
-      selectedUser=new URLSearchParams(location.search).get("user")||"";await loadUsers();
+      selectedUser=new URLSearchParams(location.search).get("user")||"";
+      if(!selectedUser){
+        const preference=await api("/api/simulator/preferences");
+        selectedUser=preference.selected_user_id||"";
+      }
+      await loadUsers();await refreshSamples();
       session=await api("/api/simulator/sessions",{method:"POST"});
       socket=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/ws/simulator/"+session.session_id);
       socket.onopen=()=>{screen.begin();identifiedUser("未錄入","unknown");$("connection").textContent="語音連線已就緒";$("connection").className="state ok";$("turn-status").textContent="請開始說話，系統會自動辨識使用者";controls();};
@@ -255,7 +290,7 @@
       };
     }catch(e){screen.offline("初始化失敗，請檢查登入及服務");$("connection").textContent="初始化失敗";toast(message(e));}
   }
-  $("user-select").onchange=e=>{screen.begin();selectedUser=e.target.value;clearPreview();saved=0;$("enrollment-status").textContent="準備開始新的三步登記。";stepView();userView();};
+  $("user-select").onchange=e=>{screen.begin();selectedUser=e.target.value;clearPreview();savedSteps=new Set();editingStep=0;$("enrollment-status").textContent="準備開始新的三步登記。";stepView();userView();savePreference();refreshSamples();};
   $("new-user").onclick=()=>{$("profile-form").hidden=!$("profile-form").hidden;};
   $("profile-form").onsubmit=async e=>{
     e.preventDefault();if(uploading)return;uploading=true;controls();
@@ -269,6 +304,12 @@
     }catch(e){toast(message(e));}finally{uploading=false;button.disabled=false;controls();}
   };
   $("enroll-start").onclick=startEnrollment;
+  document.querySelectorAll("#step-buttons button").forEach(button => {
+    button.onclick=()=>{
+      if(button.disabled || !enrollment || recording || uploading)return;
+      editingStep=Number(button.dataset.step);clearPreview();stepView();
+    };
+  });
   $("enroll-record").onclick=()=>record("enroll");
   $("enroll-confirm").onclick=confirmSample;
   $("enroll-cancel").onclick=cancelEnrollment;

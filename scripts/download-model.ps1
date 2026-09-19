@@ -1,34 +1,110 @@
 param(
-    [string]$RepoId = "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    [ValidateSet("sensevoice", "whisper", "embedding", "both")]
+    [string]$Model = "sensevoice",
+    # Optional Hugging Face mirror, e.g. https://hf-mirror.com. Defaults to HF_ENDPOINT.
+    [string]$Endpoint = "",
+    # Advanced overrides; normally derived from -Model.
+    [string]$RepoId = "",
     [string]$TargetDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-if (-not $TargetDir) {
-    $TargetDir = Join-Path $projectRoot "models\asr\whisper-large-v3-turbo-ct2"
-}
-New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+. (Join-Path $PSScriptRoot "launcher-common.ps1")
 
-$localHf = Join-Path $projectRoot ".venv\Scripts\hf.exe"
-$hf = if (Test-Path -LiteralPath $localHf) { $localHf } else { (Get-Command hf -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
-if ($hf) {
-    & $hf download $RepoId --local-dir $TargetDir
-} else {
-    $localLegacy = Join-Path $projectRoot ".venv\Scripts\huggingface-cli.exe"
-    $legacy = if (Test-Path -LiteralPath $localLegacy) { $localLegacy } else { (Get-Command huggingface-cli -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
-    if (-not $legacy) {
-        throw "Hugging Face CLI is required. Install it in the project environment with: python -m pip install huggingface_hub"
+# Two ASR backends are supported. SenseVoice is the default: 228 MB instead of
+# 1.5 GB, ~0.5 s per utterance on a CPU-only laptop, and it covers Cantonese.
+$catalog = @{
+    "sensevoice" = @{
+        RepoId    = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+        TargetDir = "models\asr\sensevoice-small"
+        Files     = @("model.int8.onnx", "tokens.txt")
+        Primary   = "model.int8.onnx"
+        Runtime   = "sherpa-onnx (ASR_PROVIDER=sensevoice)"
     }
-    & $legacy download $RepoId --local-dir $TargetDir
+    "whisper" = @{
+        RepoId    = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+        TargetDir = "models\asr\whisper-large-v3-turbo-ct2"
+        Files     = @("config.json", "model.bin", "preprocessor_config.json", "tokenizer.json", "vocabulary.json")
+        Primary   = "model.bin"
+        Runtime   = "faster-whisper (ASR_PROVIDER=whisper)"
+    }
+    # Not an ASR backend: the long-term memory flywheel needs these vectors to
+    # decide whether a stored memory is relevant to the current question. 90 MB
+    # int8-free ONNX graph, run through onnxruntime (already present for VAD),
+    # so no torch is installed for it.
+    "embedding" = @{
+        RepoId    = "Xenova/bge-small-zh-v1.5"
+        TargetDir = "models\embedding\bge-small-zh-v1.5"
+        Files     = @("onnx/model.onnx", "tokenizer.json")
+        Primary   = "onnx/model.onnx"
+        Runtime   = "onnxruntime (IOT_EMBEDDING_MODEL_PATH)"
+    }
 }
-if ($LASTEXITCODE -ne 0) { throw "Model download failed." }
 
-$required = @("config.json", "model.bin", "preprocessor_config.json", "tokenizer.json", "vocabulary.json")
-$missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $TargetDir $_)) })
-if ($missing.Count -gt 0) { throw "Downloaded model is incomplete: $($missing -join ', ')" }
+# Download one file set. Prefers the Hugging Face CLI next to the interpreter and
+# falls back to the Python API, so a missing hf.exe is not fatal.
+function Get-ModelFiles {
+    param([string]$Repository, [string]$Destination, [string[]]$FileNames, [string]$Python)
 
-$hash = (Get-FileHash (Join-Path $TargetDir "model.bin") -Algorithm SHA256).Hash
-Write-Host "Model downloaded to $TargetDir" -ForegroundColor Green
-Write-Host "model.bin SHA-256: $hash"
-Write-Host "Review the model card and license before redistribution. Weights remain ignored by Git."
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    if ($Endpoint) { $env:HF_ENDPOINT = $Endpoint }
+
+    $scriptDirectories = @()
+    if ($Python) {
+        $pythonDirectory = Split-Path -Parent $Python
+        $scriptDirectories += $pythonDirectory
+        $scriptDirectories += (Join-Path $pythonDirectory "Scripts")
+    }
+    $scriptDirectories += (Join-Path $projectRoot ".venv\Scripts")
+    foreach ($cliName in @("hf.exe", "huggingface-cli.exe")) {
+        $cliCandidates = @($scriptDirectories | ForEach-Object { Join-Path $_ $cliName })
+        $pathCommand = Get-Command $cliName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pathCommand) { $cliCandidates += $pathCommand.Source }
+        foreach ($cli in ($cliCandidates | Select-Object -Unique)) {
+            if (Test-Path -LiteralPath $cli) {
+                Write-Host "  using $cliName" -ForegroundColor DarkGray
+                # Pass the explicit file list: without it the CLI mirrors the whole
+                # repository, which for SenseVoice means 1.1 GB instead of 228 MB.
+                & $cli download $Repository @FileNames --local-dir $Destination
+                if ($LASTEXITCODE -eq 0) { return }
+                Write-Host "  $cliName failed; trying another downloader" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    if (-not $Python) { throw "No Python interpreter found. Set IOT_PYTHON or install Python." }
+
+    # Values travel through the environment so PowerShell never has to quote them.
+    $env:IOT_HF_REPO = $Repository
+    $env:IOT_HF_DIR = $Destination
+    $env:IOT_HF_FILES = ($FileNames -join ",")
+    & $Python -c "import os; from huggingface_hub import hf_hub_download; [hf_hub_download(repo_id=os.environ['IOT_HF_REPO'], filename=f, local_dir=os.environ['IOT_HF_DIR']) for f in os.environ['IOT_HF_FILES'].split(',')]"
+    if ($LASTEXITCODE -ne 0) { throw "Model download failed: $Repository" }
+}
+
+$wanted = if ($Model -eq "both") { @("sensevoice", "whisper") } else { @($Model) }
+$python = Resolve-ProjectPython -ProjectRoot $projectRoot -Quiet
+if ($python) { Write-Host "interpreter: $python" -ForegroundColor DarkGray }
+if ($Endpoint) { Write-Host "endpoint   : $Endpoint" -ForegroundColor DarkGray }
+
+foreach ($name in $wanted) {
+    $entry = $catalog[$name]
+    $repository = if ($RepoId -and $wanted.Count -eq 1) { $RepoId } else { $entry.RepoId }
+    $destination = if ($TargetDir -and $wanted.Count -eq 1) { $TargetDir } else { Join-Path $projectRoot $entry.TargetDir }
+
+    Write-Host "`n[$name] $repository" -ForegroundColor Cyan
+    Get-ModelFiles -Repository $repository -Destination $destination -FileNames $entry.Files -Python $python
+
+    $missing = @($entry.Files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $destination $_)) })
+    if ($missing.Count -gt 0) { throw "Downloaded $name model is incomplete: $($missing -join ', ')" }
+
+    $primary = Join-Path $destination $entry.Primary
+    $hash = (Get-FileHash $primary -Algorithm SHA256).Hash
+    Write-Host "  -> $destination" -ForegroundColor Green
+    Write-Host "  $($entry.Primary) SHA-256: $hash"
+    Write-Host "  runtime: $($entry.Runtime)"
+    if ($name -eq "embedding") { Write-Host "  note: onnx\model.onnx is ~90 MB; without it the robot still talks, it just stops remembering." -ForegroundColor DarkGray }
+}
+
+Write-Host "`nReview each model card and license before redistribution. Weights remain ignored by Git." -ForegroundColor DarkGray

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la E:/project/robot_chat/; echo \"=== parent ===\"; ls -la E:/project/)",
+      "Read(//e/project/**)"
+    ]
+  }
+}

@@ -1,3 +1,8 @@
+> **⚠ 歷史規劃文件（2026-09-14）**：本檔是當時的規劃／規格紀錄，保留原樣以利追溯。
+> 其中的個人路徑（`C:/Users/gcgcg/...`）指向撰寫當時的機器，**在本儲存庫無效**；
+> 「目前不是 Git repository」「已下載的模型」等敘述也可能已經改變。
+> 現況請看 [IMPLEMENTATION_STATUS.md](../../IMPLEMENTATION_STATUS.md)。
+
 # 第一階段：無 ESP 軟體 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans after user authorization. Steps use checkbox (`- [ ]`) syntax for tracking. 本文件是未執行的開發清單，測試範例不是本輪測試結果。

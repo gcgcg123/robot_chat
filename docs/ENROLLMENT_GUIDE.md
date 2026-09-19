@@ -19,7 +19,7 @@
 - preferred_language：偏好對話語言，影響 LLM 系統指示、fallback 回覆及瀏覽器 TTS 選音。
 - enrollment_language：最近一次成功登記的範本語言，和對話偏好獨立。
 - 新使用者預設粵語；舊使用者遷移保留普通話預設，登記語言顯示未記錄。可在個人資料頁編輯。
-- ASR 預設自動判斷，適合混合語言；取消自動判斷後，依偏好傳入 yue、zh 或 en。現有 faster-whisper 套件確認包含 yue。
+- ASR 預設自動判斷，適合混合語言；取消自動判斷後，依偏好傳入 yue、zh 或 en。預設後端 SenseVoice-Small 原生支援 yue／zh／en／ja／ko；改用 `ASR_PROVIDER=whisper` 時，faster-whisper 的 Whisper 模型同樣包含 yue。
 - PC 播放使用 Web Speech API 的可用系統音色，粵語只選粵語／香港中文音色。缺少音色會提示，只顯示字幕，不假裝播出粵語。
 - 瀏覽器音色可能由系統供應商提供；ESP 的服務端語音合成仍待第二階段。當輪要求換語言可影響 LLM 文字，但語音音色仍以個人偏好選擇。
 

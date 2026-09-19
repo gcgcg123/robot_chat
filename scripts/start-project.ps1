@@ -24,13 +24,15 @@ if (-not $RuntimeDir) { $RuntimeDir = Join-Path $projectRoot "runtime" }
 if (-not $LogDir) { $LogDir = Join-Path $projectRoot "logs" }
 if (-not $SecretFile) { $SecretFile = Join-Path $projectRoot "data\secrets\deepseek.key" }
 if (-not $AdminSecretFile) { $AdminSecretFile = Join-Path $projectRoot "data\secrets\admin.password" }
-if (-not $DataDir) { $DataDir = if ($env:IOT_DATA_DIR) { $env:IOT_DATA_DIR } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "IoTGroup5" } else { Join-Path $env:USERPROFILE "AppData\Local\IoTGroup5" } }
-$venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+# Runtime data lives inside the checkout (.\IoTGroup5) so nothing is written to
+# the C: drive. An explicit -DataDir or IOT_DATA_DIR still wins.
+if (-not $DataDir) { $DataDir = if ($env:IOT_DATA_DIR) { $env:IOT_DATA_DIR } else { Join-Path $projectRoot "IoTGroup5" } }
+$venvPython = Resolve-ProjectPython -ProjectRoot $projectRoot -Quiet
 $dashboardUrl = "http://${hostAddress}:${actualPort}/dashboard"
 $healthUrl = "http://${hostAddress}:${actualPort}/health"
 
-if (-not (Test-Path -LiteralPath $venvPython)) {
-    throw "Virtual environment not found. Run the first-time setup batch file."
+if (-not $CheckOnly -and (-not $venvPython -or -not (Test-Path -LiteralPath $venvPython))) {
+    throw "No Python interpreter found. Run the first-time setup batch file, set IOT_PYTHON, or fill in 'python' in configs\launcher.json."
 }
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir, $LogDir | Out-Null
@@ -44,10 +46,24 @@ if ($CheckOnly) {
         (Join-Path $DataDir ("secrets\simulator-{0}.token" -f $deviceIdForCheck))
     )
     $simulatorTokenConfigured = -not [string]::IsNullOrWhiteSpace($DeviceToken) -or ($tokenCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    $asrProviderForCheck = if ($config.asr_provider) { [string]$config.asr_provider } else { "whisper" }
+    if ($asrProviderForCheck -eq "sensevoice") {
+        $asrModelPathForCheck = [string]$config.asr_sensevoice_model_path
+        $asrModelFileForCheck = "model.int8.onnx"
+    } else {
+        $asrModelPathForCheck = [string]$config.asr_whisper_model_path
+        $asrModelFileForCheck = "model.bin"
+    }
+    $asrDirectoryForCheck = if ([System.IO.Path]::IsPathRooted($asrModelPathForCheck)) {
+        $asrModelPathForCheck
+    } else {
+        Join-Path $projectRoot $asrModelPathForCheck
+    }
+    $asrModelProbeForCheck = Join-Path $asrDirectoryForCheck $asrModelFileForCheck
     [ordered]@{
         ready = $true
         project_root = $projectRoot
-        python_ready = (Test-Path -LiteralPath $venvPython)
+        python_ready = [bool]$venvPython
         host = $hostAddress
         port = $actualPort
         development = [bool]$Development
@@ -55,9 +71,13 @@ if ($CheckOnly) {
         database_path = (Join-Path $DataDir "emotional_robot.sqlite3")
         admin_configured = [bool]$adminConfigured
         simulator_token_configured = [bool]$simulatorTokenConfigured
+        asr_provider = $asrProviderForCheck
+        asr_model_path = $asrModelPathForCheck
+        asr_model_present = Test-Path -LiteralPath $asrModelProbeForCheck
         diagnostics = @(
             if (-not $adminConfigured) { "admin_password_required" }
             if (-not $simulatorTokenConfigured -and [bool]$config.heartbeat_enabled -and -not $NoHeartbeat) { "simulator_token_required_for_heartbeat" }
+            if (-not (Test-Path -LiteralPath $asrModelProbeForCheck)) { "asr_model_missing:$asrProviderForCheck" }
         )
     } | ConvertTo-Json -Compress
     exit 0
@@ -92,6 +112,15 @@ if (-not $env:IOT_ADMIN_PASSWORD -and (Test-Path -LiteralPath $AdminSecretFile))
 }
 $env:DEEPSEEK_BASE_URL = [string]$config.deepseek_base_url
 $env:DEEPSEEK_MODEL = [string]$config.deepseek_model
+# The ASR backend selection lives in the tracked launcher config rather than in
+# .env (which is gitignored and never created by setup), so a fresh clone runs
+# the intended backend instead of silently falling back to the default.
+if ($config.asr_provider) { $env:ASR_PROVIDER = [string]$config.asr_provider }
+if ($config.asr_sensevoice_model_path) { $env:ASR_SENSEVOICE_MODEL_PATH = [string]$config.asr_sensevoice_model_path }
+if ($config.asr_whisper_model_path) { $env:ASR_MODEL_PATH = [string]$config.asr_whisper_model_path }
+if ($config.asr_device) { $env:ASR_DEVICE = [string]$config.asr_device }
+if ($config.asr_cpu_threads) { $env:ASR_CPU_THREADS = ([int]$config.asr_cpu_threads).ToString() }
+if ($null -ne $config.asr_use_itn) { $env:ASR_USE_ITN = $(if ([bool]$config.asr_use_itn) { "1" } else { "0" }) }
 $env:IOT_DATA_DIR = $DataDir
 $env:DATABASE_PATH = Join-Path $DataDir "emotional_robot.sqlite3"
 
