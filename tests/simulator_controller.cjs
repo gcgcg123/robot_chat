@@ -65,7 +65,7 @@ vm.runInNewContext(fs.readFileSync("services/dashboard/simulator.js","utf8"),san
 (async()=>{
   await new Promise(setImmediate);await new Promise(setImmediate);
   assert.equal(el("user-select").value,"u","saved user preference must load without a query parameter");
-  assert.match(el("display-state").textContent,/待機/);
+  assert.match(el("display-state").textContent,/待机/);
   await el("enroll-start").onclick();
   assert.equal(el("reading-prompt").textContent,"First passage");
   assert.equal(el("enroll-confirm").disabled,true);
@@ -114,9 +114,9 @@ vm.runInNewContext(fs.readFileSync("services/dashboard/simulator.js","utf8"),san
   const transcriptsBefore=requests.filter(r=>r.path==="/api/transcribe").length;
   const recordingPromise=el("conversation-record").onclick();
   await new Promise(setImmediate);
-  assert.match(el("display-state").textContent,/聆聽/);
+  assert.match(el("display-state").textContent,/聆听/);
   liveSocket.onclose();await recordingPromise;
-  assert.match(el("display-state").textContent,/離線/,"recording continuation must preserve offline state");
+  assert.match(el("display-state").textContent,/离线/,"recording continuation must preserve offline state");
   assert.equal(requests.filter(r=>r.path==="/api/transcribe").length,transcriptsBefore,"disconnect must not upload captured audio");
   console.log("PASS: preview, rerecord, failed upload retry, three confirmations and final completion");
 })().catch(e=>{console.error(e);process.exitCode=1;});
