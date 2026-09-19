@@ -18,7 +18,12 @@ function Write-OwnedProcessState(
     [string]$CommandContains,
     [string]$RunId
 ) {
-    $snapshot = Get-ProcessSnapshot -TargetProcessId $Process.Id
+    $snapshot = $null
+    for ($attempt = 0; $attempt -lt 10 -and -not $snapshot; $attempt++) {
+        if ($Process.HasExited) { break }
+        $snapshot = Get-ProcessSnapshot -TargetProcessId $Process.Id
+        if (-not $snapshot) { Start-Sleep -Milliseconds 200 }
+    }
     if (-not $snapshot) { throw "Unable to inspect the newly started $Role process." }
     $state = [ordered]@{
         pid = $Process.Id
@@ -59,7 +64,11 @@ function Stop-ProcessTree([int]$TargetProcessId) {
     foreach ($child in $children) {
         Stop-ProcessTree -TargetProcessId ([int]$child.ProcessId)
     }
-    Stop-Process -Id $TargetProcessId -Force -ErrorAction SilentlyContinue
+    $process = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
+    if ($process) {
+        Stop-Process -InputObject $process -Force -ErrorAction SilentlyContinue
+        if (-not $process.WaitForExit(5000)) { throw "Timed out stopping process $TargetProcessId." }
+    }
 }
 
 function Stop-OwnedProcess([string]$StateFile, [string]$ExpectedRole) {
@@ -72,5 +81,45 @@ function Stop-OwnedProcess([string]$StateFile, [string]$ExpectedRole) {
 
 function Quote-ProcessArgument([string]$Value) {
     return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+}
+
+function Resolve-ProjectPython {
+    <#
+        Locate the interpreter that runs the project, in priority order:
+
+          1. IOT_PYTHON
+          2. the "python" entry in configs/launcher.json
+          3. <project>\.venv\Scripts\python.exe
+          4. "python" on PATH
+
+        Hardcoding one machine's interpreter path made the documented one-click
+        start fail everywhere else, so every launcher script resolves it here.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [switch]$Quiet
+    )
+
+    $candidates = @()
+    if ($env:IOT_PYTHON) { $candidates += $env:IOT_PYTHON }
+
+    $configPath = Join-Path $ProjectRoot "configs\launcher.json"
+    if (Test-Path -LiteralPath $configPath) {
+        $configured = [string](Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json).python
+        if (-not [string]::IsNullOrWhiteSpace($configured)) {
+            if ([System.IO.Path]::IsPathRooted($configured)) { $candidates += $configured }
+            else { $candidates += (Join-Path $ProjectRoot $configured) }
+        }
+    }
+
+    $candidates += (Join-Path $ProjectRoot ".venv\Scripts\python.exe")
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+
+    $command = Get-Command python -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    if ($Quiet) { return $null }
+    throw "No Python interpreter found. Run the first-time setup, set IOT_PYTHON, or fill in 'python' in configs\launcher.json."
 }
 

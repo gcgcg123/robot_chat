@@ -11,6 +11,9 @@ __pycache__/
 htmlcov/
 
 # Runtime data, credentials, recordings and generated reports.
+# IoTGroup5/ is the live data directory (database + simulator token + backups):
+# it sits inside the checkout for portability, so it must stay out of Git.
+IoTGroup5/
 data/**/*.db
 data/**/*.sqlite*
 data/**/*.wav
@@ -21,6 +24,13 @@ data/secrets/
 logs/
 runtime/
 reports/
+
+# Generated reports and debug artifacts.
+**/__pycache__/
+.pytest_cache/
+*.pyc
+acceptance-*.txt
+*-report.txt
 
 # Model artifacts are downloaded from the manifest, never committed.
 models/**
@@ -34,3 +44,7 @@ models/**
 *.swp
 Thumbs.db
 Desktop.ini
+
+# The PowerShell launchers under scripts/ ARE versioned: the .bat entrypoints
+# call them, so ignoring them made a fresh clone unable to start. They resolve
+# the interpreter through Resolve-ProjectPython instead of hardcoding one path.

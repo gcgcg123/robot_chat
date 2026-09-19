@@ -1,5 +1,12 @@
 # Phase 1 Execution Ledger
 
+> **歷史紀錄（2026-09-14）**：本檔是當時的執行帳本，保留原樣以供稽核。
+> 其中以下敘述**已經不成立**：專案現在是 Git 儲存庫（`github.com/gcgcg123/robot_chat`，分支 `lqq`）；
+> 解譯器不再是 `.venv/Scripts/python.exe`，而由啟動器的 `Resolve-ProjectPython` 解析（`IOT_PYTHON` →
+> `configs/launcher.json` 的 `python` → `.venv` → PATH），目前是 Python 3.11.16 的 conda 環境；
+> `pytest` 仍**未**列入 `requirements.txt`（當時的 9.1.1 版本無從查證）。
+> 現況請看 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)。
+
 Plan: `docs/superpowers/plans/2026-09-14-phase1-software.md`
 
 User authorized Phase 1 implementation on 2026-09-14. Phase 2 firmware is not authorized until hardware arrival. This file records actual work. A `[x]` entry means the PC implementation and automated contract checks are complete; human hardware, voice-quality, and production-operation gates are tracked separately. RAG remains a disabled extension point because its knowledge content is intentionally left for project-specific design.

@@ -2,6 +2,19 @@
   "schema_version": 1,
   "models": [
     {
+      "id": "asr.sensevoice-small.onnx",
+      "task": "automatic-speech-recognition",
+      "source": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+      "revision": "main",
+      "target_dir": "models/asr/sensevoice-small",
+      "loader": "sherpa-onnx",
+      "required_files": ["model.int8.onnx", "tokens.txt"],
+      "checksums": {
+        "model.int8.onnx": "C71F0CE00BEC95B07744E116345E33D8CBBE08CEF896382CF907BF4B51A2CD51",
+        "tokens.txt": "F449EB28DC567533D7FA59BE34E2ABCA8784F771850C78A47FB731A31429A1DC"
+      }
+    },
+    {
       "id": "asr.whisper-large-v3-turbo.ct2",
       "task": "automatic-speech-recognition",
       "source": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo",
@@ -13,6 +26,22 @@
         "model.bin": "E76620F83D5F5B69EFD3D87E3DC180C1BD21DF9FBEBACFD4335E5E1EFCC018DA",
         "config.json": "B0253EA6C0D3BEA6B1E19E91A02ACFD3B53F4467362EFCB5A3E6B16C9B3A9B7E"
       }
+    },
+    {
+      "id": "memory.bge-small-zh-v1.5.onnx",
+      "task": "feature-extraction",
+      "purpose": "long-term memory recall: embeds each stored probe and each new question so relevance can be judged by cosine similarity",
+      "source": "https://huggingface.co/Xenova/bge-small-zh-v1.5",
+      "revision": "main",
+      "target_dir": "models/embedding/bge-small-zh-v1.5",
+      "loader": "onnxruntime + tokenizers",
+      "required_files": ["onnx/model.onnx", "tokenizer.json"],
+      "checksums": {
+        "onnx/model.onnx": "69A0B846F4F116B5E6AABF9546EA6754D02264F3211A13A1BD69B31B8040749A",
+        "tokenizer.json": "48CEA5D44424912A6FD1EA647BF4FE50B55AB8B1E5879C3275F80E339E8FAE26"
+      },
+      "env": "IOT_EMBEDDING_MODEL_PATH",
+      "degraded_mode": "if the directory is missing the service still starts; scoring falls back to lexical similarity, which is weaker on Chinese"
     }
   ]
 }

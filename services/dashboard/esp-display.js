@@ -28,12 +28,13 @@
     reset(state="idle",caption=""){
       this.epoch++;this.clear(this.hold);this.cancel?.();this.cancel=null;
       this.queue=[];this.active=false;this.done=false;this.completed=false;this.turn=null;this.seen=new Set();
-      this.model={state,caption,transcript:"",userText:"",expression:"neutral",emotion:"neutral",risk:"none",level:0,progress:0,segment:0,mode:"",revealed:0,changedAt:this.now()};
+      this.model={state,caption,transcript:"",userText:"",user:"未錄入",expression:"neutral",emotion:"neutral",risk:"none",level:0,progress:0,segment:0,mode:"",revealed:0,changedAt:this.now()};
       this.emit();
     }
     begin(requestId){this.reset();this.requestId=requestId;}
     emit(){this.onChange(this.model);}
     setLevel(level){this.model.level=Math.max(0,Math.min(1,level));}
+    setUser(user){this.model.user=user||"未錄入";this.emit();}
     setState(state,caption){
       this.model.state=state;this.model.level=0;
       if(caption!==undefined)this.model.caption=caption;
@@ -182,12 +183,14 @@
       c.fillText(labels[m.state]||m.state,12,142);
       if(m.expression==="comfort" && m.state!=="speaking"){c.textAlign="right";c.fillStyle=color;c.fillText("慢慢来，我在",308,142);}
       c.fillStyle="#203440";c.fillRect(8,152,304,70);
+      c.fillStyle="#b8d8d5";c.font="10px system-ui";c.textAlign="left";
+      c.fillText("聲紋使用者：" + m.user,16,166);
       c.font="14px system-ui";c.fillStyle="#f3f7f9";c.textAlign="left";
       const lines=wrapText(m.caption,text=>c.measureText(text).width,280);
       // Rolling viewport: all long STT lines cycle; speech follows revealed text.
       const max=Math.max(0,lines.length-3);
       const start=m.state==="speaking"||m.state==="idle"?max:Math.floor(Math.max(0,Date.now()-m.changedAt)/2200)%(max+1);
-      lines.slice(start,start+3).forEach((text,i)=>c.fillText(text,16,169+i*20));
+      lines.slice(start,start+2).forEach((text,i)=>c.fillText(text,16,184+i*20));
       c.fillStyle="#a7bfcb";c.font="9px system-ui";
       c.fillText(lines.length>3?"行 "+(start+1)+"–"+Math.min(start+3,lines.length)+" / "+lines.length:"",12,235);
       c.textAlign="right";c.fillText(m.segment?"SEG "+m.segment+" · "+Math.round(m.progress*100)+"%":"2.4″ · 逻辑预览",308,235);

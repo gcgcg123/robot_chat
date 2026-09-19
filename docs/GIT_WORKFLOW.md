@@ -15,7 +15,7 @@ git submodule update --init --recursive
 Then create the Python environment with `一鍵安裝並啟動.bat` and download the model:
 
 ```powershell
-.\scripts\download-model.ps1
+.\scripts\download-model.ps1        # default: SenseVoice-Small (~228 MB)
 ```
 
 ## Daily change flow
@@ -25,14 +25,19 @@ git switch main
 git pull --ff-only
 git switch -c feature/<short-name>
 # edit and test
-.\.venv\Scripts\python.exe -m pytest tests -q
-.\.venv\Scripts\python.exe -m compileall -q services simulator scripts
+python -m pytest tests -q
+python -m compileall -q services simulator scripts
 git diff --check
 git status --short
 git add <source-files>
 git commit -m "feat: describe the change"
 git push -u origin feature/<short-name>
 ```
+
+Use whichever interpreter runs the project: the launcher resolves it as
+`IOT_PYTHON` -> `configs/launcher.json`'s `python` -> project `.venv` -> `python`
+on PATH. `pytest` is not listed in `requirements.txt` yet, so install it in that
+same environment first (`python -m pip install pytest`).
 
 Do not commit `.env`, `data/`, `runtime/`, `logs/`, model weights, API keys,
 device tokens, voiceprint templates, raw audio or SQLite databases. Do not use

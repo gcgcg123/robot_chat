@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "launcher-common.ps1")
 if (-not $SecretFile) {
     $SecretFile = Join-Path $projectRoot "data\secrets\deepseek.key"
 }
@@ -19,23 +20,7 @@ $secretDirectory = Split-Path -Parent $SecretFile
 New-Item -ItemType Directory -Force -Path $secretDirectory | Out-Null
 
 if (-not $SkipInstall) {
-    $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $venvPython)) {
-        $pythonLauncher = Get-Command py -ErrorAction SilentlyContinue
-        if ($pythonLauncher) {
-            foreach ($selector in @("-3.13", "-3.10", "-3")) {
-                & $pythonLauncher.Source $selector -m venv (Join-Path $projectRoot ".venv")
-                if (Test-Path -LiteralPath $venvPython) { break }
-            }
-        }
-        if (-not (Test-Path -LiteralPath $venvPython)) {
-            $systemPython = Get-Command python -ErrorAction Stop
-            & $systemPython.Source -m venv (Join-Path $projectRoot ".venv")
-        }
-    }
-    if (-not (Test-Path -LiteralPath $venvPython)) {
-        throw "Unable to create the Python virtual environment. Install Python 3.10 or newer first."
-    }
+    $venvPython = Resolve-ProjectPython -ProjectRoot $projectRoot
     & $venvPython -m pip install -r (Join-Path $projectRoot "requirements.txt")
     if ($LASTEXITCODE -ne 0) {
         throw "Python dependency installation failed."

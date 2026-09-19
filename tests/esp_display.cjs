@@ -36,7 +36,7 @@ assert.equal(played.length,2);
 played[0].hooks.end();
 assert.equal(finished,0,"duplicate end callback must not finish the next segment");
 played[1].hooks.start(false);
-assert.equal(display.model.mode,"字幕預覽（無音訊）");
+assert.equal(display.model.mode,"字幕预览（无音频）");
 played[1].hooks.end();
 assert.equal(display.model.caption,"慢慢說。");
 assert.equal(display.model.transcript,"我會陪伴你。慢慢說。");

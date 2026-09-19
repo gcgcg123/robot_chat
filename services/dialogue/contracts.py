@@ -20,6 +20,10 @@ class DialogueResult:
     segments: list[str] = field(default_factory=list)
     latency_ms: dict[str, int] = field(default_factory=dict)
     model: dict[str, Any] = field(default_factory=dict)
+    # Memories that actually made it into the prompt (the flywheel rewards these)
+    used_memory_ids: list[str] = field(default_factory=list)
+    # Raw `remember` proposals from the model, for the caller to persist
+    memory_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         identity = asdict(self.identity) if is_dataclass(self.identity) else self.identity
@@ -36,5 +40,7 @@ class DialogueResult:
             "segments": list(self.segments),
             "latency_ms": dict(self.latency_ms),
             "model": dict(self.model),
+            "used_memory_ids": list(self.used_memory_ids),
+            "memory_candidates": list(self.memory_candidates),
         }
 
