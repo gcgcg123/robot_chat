@@ -961,6 +961,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     @application.get("/dashboard", response_class=HTMLResponse)
     def dashboard() -> str: return (ROOT / "services" / "dashboard" / "index.html").read_text(encoding="utf-8")
 
+    @application.get("/dashboard/profile", response_class=HTMLResponse)
+    def dashboard_profile() -> str: return (ROOT / "services" / "dashboard" / "profile.html").read_text(encoding="utf-8")
+
     @application.get("/dashboard/user/{user_id}", response_class=HTMLResponse)
     def dashboard_user(user_id: str, request: Request) -> str:
         with db() as conn: admin_auth(request, conn)

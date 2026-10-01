@@ -43,6 +43,7 @@ models/**
 !models/manifest.json
 
 # Local editor and OS files.
+.vs/
 .vscode/
 .idea/
 *.swp
