@@ -32,6 +32,11 @@ reports/
 acceptance-*.txt
 *-report.txt
 
+# Test code is kept locally and is deliberately not versioned: the suite exercises
+# this machine's models, database and launcher scripts, and the repository ships
+# without it. CI skips the test steps when the tree is absent (see ci.yml).
+tests/
+
 # Model artifacts are downloaded from the manifest, never committed.
 models/**
 !models/README.md

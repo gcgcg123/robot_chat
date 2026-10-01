@@ -32,7 +32,21 @@ $dashboardUrl = "http://${hostAddress}:${actualPort}/dashboard"
 $healthUrl = "http://${hostAddress}:${actualPort}/health"
 
 if (-not $CheckOnly -and (-not $venvPython -or -not (Test-Path -LiteralPath $venvPython))) {
-    throw "No Python interpreter found. Run the first-time setup batch file, set IOT_PYTHON, or fill in 'python' in configs\launcher.json."
+    throw "No Python interpreter found. Run the first-time setup batch file, set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
+}
+
+# A resolved interpreter that cannot import the app's dependencies is the failure
+# this probe exists for: PATH commonly names a Python that has none of them, and the
+# only symptom used to be an opaque "Unable to inspect the newly started process".
+# Probing here names the interpreter and both ways to point the project at the right
+# one, before anything is started.
+$interpreterRunnable = $false
+if ($venvPython -and (Test-Path -LiteralPath $venvPython)) {
+    & $venvPython -c "import uvicorn" | Out-Null
+    $interpreterRunnable = ($LASTEXITCODE -eq 0)
+}
+if (-not $CheckOnly -and -not $interpreterRunnable) {
+    throw "The interpreter '$venvPython' cannot import the project's dependencies (uvicorn), so the service would exit immediately. Point the project at the environment that has them: put IOT_PYTHON=<env>\python.exe in .env (machine-local and gitignored), or fill in 'python' in configs\launcher.json. Then run .\scripts\bootstrap-project.ps1 to install the dependencies there."
 }
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir, $LogDir | Out-Null
@@ -64,6 +78,8 @@ if ($CheckOnly) {
         ready = $true
         project_root = $projectRoot
         python_ready = [bool]$venvPython
+        python_runnable = [bool]$interpreterRunnable
+        python_path = [string]$venvPython
         host = $hostAddress
         port = $actualPort
         development = [bool]$Development
@@ -76,6 +92,7 @@ if ($CheckOnly) {
         asr_model_present = Test-Path -LiteralPath $asrModelProbeForCheck
         diagnostics = @(
             if (-not $adminConfigured) { "admin_password_required" }
+            if (-not $interpreterRunnable) { "python_missing_dependencies:$venvPython" }
             if (-not $simulatorTokenConfigured -and [bool]$config.heartbeat_enabled -and -not $NoHeartbeat) { "simulator_token_required_for_heartbeat" }
             if (-not (Test-Path -LiteralPath $asrModelProbeForCheck)) { "asr_model_missing:$asrProviderForCheck" }
         )
@@ -190,7 +207,7 @@ try {
         }
         $startedServiceHere = $true
         $runId = [guid]::NewGuid().ToString("N")
-        Write-OwnedProcessState -StateFile $serviceStateFile -Process $serviceProcess -Role "service" -CommandContains "services.dialogue.app:app" -RunId $runId
+        Write-OwnedProcessState -StateFile $serviceStateFile -Process $serviceProcess -Role "service" -CommandContains "services.dialogue.app:app" -RunId $runId -LogHint (Join-Path $LogDir "service-error.log")
 
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
@@ -222,7 +239,7 @@ if ($heartbeatEnabled) {
     $heartbeatCommand = ($heartbeatArguments | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join " "
     $heartbeatProcess = Start-Process -FilePath $venvPython -ArgumentList $heartbeatCommand -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $LogDir "heartbeat.log") -RedirectStandardError (Join-Path $LogDir "heartbeat-error.log") -PassThru
     try {
-        Write-OwnedProcessState -StateFile $heartbeatStateFile -Process $heartbeatProcess -Role "heartbeat" -CommandContains "simulator.heartbeat" -RunId $runId
+        Write-OwnedProcessState -StateFile $heartbeatStateFile -Process $heartbeatProcess -Role "heartbeat" -CommandContains "simulator.heartbeat" -RunId $runId -LogHint (Join-Path $LogDir "heartbeat-error.log")
     } catch {
         Write-HeartbeatFailure "process_inspection_failed"
         Stop-ProcessTree -TargetProcessId $heartbeatProcess.Id

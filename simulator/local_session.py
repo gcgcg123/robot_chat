@@ -7,6 +7,10 @@ from services.storage.database import open_database
 from services.storage.migrations import migrate
 
 
+
+
+
+
 def ensure_local_token(data_dir: str | Path, device_id: str) -> str:
     root = Path(data_dir).resolve()
     token_path = root / "secrets" / "simulator.token"
