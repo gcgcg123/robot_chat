@@ -349,6 +349,9 @@ API：`GET/POST /api/users/{user_id}/memories`、`PATCH/DELETE /api/users/{user_
 python -m pytest tests\memory -q
 ```
 
+`tests\` 不納入 Git（見 `.gitignore`），所以**從 GitHub 下載的副本沒有這些測試檔**，
+在那裡跑會得到 `file or directory not found: tests`；`tests\` 留在開發工作區照樣可執行。
+
 需要嵌入模型的測試（`tests/memory/test_embeddings.py` 的三個 `test_real_model_*`）在模型
 不存在時會自動 skip；`test_real_model_bands_justify_the_merge_threshold` 會在模型存在時
 把合併門檻的界線釘住，換模型或調低門檻都會被抓到。

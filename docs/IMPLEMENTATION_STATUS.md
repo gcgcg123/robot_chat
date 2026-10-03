@@ -34,7 +34,7 @@
 
 ## 已驗證（可重現）
 
-- 自動化測試：`python -m pytest tests -q` → **173 passed、0 failed**（`pytest` 以
+- 自動化測試：`python -m pytest tests -q` → **226 passed、0 failed**（`pytest` 以
   `requirements-dev.txt` 安裝；見下節環境事實）；`python -m compileall -q services simulator scripts` 成功。
 - 記憶飛輪端到端（真模型、真服務，非 mock）已驗證過：自動寫入 → 無關問題不注入 →
   相關問題命中加分 → 回溯 90 天降為冷記憶 → 無關問題不喚醒 → 重新提起後冷記憶被找到並
@@ -55,7 +55,7 @@
 
   Whisper 的耗時**與錄音長度無關**（固定 30 秒編碼窗口），因此縮短錄音不會變快；這是改用 SenseVoice 的主因。
 - ASR 後端與 GPU 決策可由 `/health`（`asr_backend`、`asr_model`）與 `/api/system/status`（`asr.device`、`asr.compute_type`、`cuda_available`、`runtime_reason`）查得。
-- 啟動器黑箱驗收：`tests/test_project_launcher.py` 10 passed（真實啟停往返、token 供應、篡改狀態不誤殺）。
+- 啟動器黑箱驗收：`tests/test_project_launcher.py` 16 passed（真實啟停往返、token 供應、篡改狀態不誤殺）。
 
 ## 已知失敗
 

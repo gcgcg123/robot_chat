@@ -63,7 +63,7 @@ uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 
 少了嵌入模型服務照樣啟動，但長期記憶會退回字面比對，中文改述的召回明顯變差。
 
-啟動器會依序尋找解譯器：`IOT_PYTHON` → `configs/launcher.json` 的 `python` → 專案 `.venv` → PATH 上的 `python`。若你用的不是專案 `.venv`，把它的路徑填進 `configs/launcher.json` 的 `python` 即可。
+啟動器會依序尋找解譯器：`IOT_PYTHON`（環境變數）→ `.env` 的 `IOT_PYTHON` → `configs/launcher.json` 的 `python` → 專案 `.venv` → PATH 上的 `python`。若你用的不是專案 `.venv`（例如某個 conda 環境），把它的 `python.exe` 填進 **`.env` 的 `IOT_PYTHON`**——`configs/launcher.json` 是版本控制檔案，單機路徑放那裡會被之後的整理清掉。啟動前會先確認該解譯器真的能跑這個專案，不能就指名它並說明怎麼改。
 
 開啟 `http://127.0.0.1:8080/dashboard`。未設定密鑰時，服務仍會使用可測試的 fallback 回覆；設定後才呼叫 DeepSeek OpenAI-compatible endpoint。模型 ID 由 `DEEPSEEK_MODEL` 控制（`configs/launcher.json` 的 `deepseek_model` 會覆寫 `.env`，四份設定檔的值已統一為 `deepseek-flash`）。
 
@@ -115,7 +115,7 @@ RAG 分成三個資料域：核准的 `shared` 共享知識、只在身份 accep
 
 ```powershell
 pip install -r requirements-dev.txt      # 只多了 pytest，執行期相依仍在 requirements.txt
-python -m pytest tests -q                # 173 passed
+python -m pytest tests -q                # 226 passed（本機實測）
 python -m compileall -q services simulator scripts
 ```
 

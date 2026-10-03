@@ -14,6 +14,8 @@ import httpx
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
+
+
 def proxy_allowed(url: str) -> bool:
     """Whether a system proxy may be used for this URL.
 

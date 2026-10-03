@@ -20,7 +20,13 @@ data\secrets\deepseek.key
 
 從 GitHub 下載 ZIP 並解壓後，直接雙擊根目錄的 `一鍵安裝並啟動.bat`。腳本會安裝依賴、下載缺少的 Xiaozhi 參考程式、ASR 模型與長期記憶用的嵌入模型、由 `.env.example` 建立 `.env`，並在首次執行時完成密鑰、管理員密碼與 simulator token 設定；後續再次執行會直接啟動服務。這需要 Python 3.10 或更新版本、Git 和網路連線。
 
-腳本不建立虛擬環境，而是依序尋找解譯器：`IOT_PYTHON` → `configs/launcher.json` 的 `python` → 專案 `.venv\Scripts\python.exe` → PATH 上的 `python`。若你想用特定的 conda／venv 環境，把它的 `python.exe` 路徑填進 `configs/launcher.json` 的 `python` 欄位即可。
+腳本不建立虛擬環境，而是依序尋找解譯器：`IOT_PYTHON`（環境變數）→ **`.env` 裡的 `IOT_PYTHON`** → `configs/launcher.json` 的 `python` → 專案 `.venv\Scripts\python.exe` → PATH 上的 `python`。若你想用特定的 conda／venv 環境，把它的 `python.exe` 路徑填進 **`.env` 的 `IOT_PYTHON`**（`.env` 未納入 Git，單機設定放這裡才不會被之後的版本控制整理清掉）：
+
+```ini
+IOT_PYTHON=D:\ProgramData\Anaconda_envs\envs\robot_chat\python.exe
+```
+
+啟動前會檢查解析到的解譯器是否真的能跑這個專案（`import uvicorn`）。不能的話會直接指名解譯器與設定方式，而不是啟動一個會立刻死掉的服務——PATH 上的 `python` 常常是沒有這些依賴的另一個直譯器。`-CheckOnly` 會回報 `python_path` 與 `python_runnable`，並在 `diagnostics` 列出 `python_missing_dependencies:<路徑>`。
 
 預設下載 **SenseVoice-Small（約 228 MB）**，以及長期記憶需要的 **BGE-small-zh-v1.5 嵌入模型（約 90 MB）**。要改用 Whisper 基線（約 1.5 GB）：
 

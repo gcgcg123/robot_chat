@@ -55,5 +55,8 @@ git add upstream/xiaozhi-esp32-server
 git commit -m "chore: update Xiaozhi reference"
 ```
 
-CI runs `pytest tests -q` so the upstream repository's own test package does
-not collide with this project's `tests/conftest.py`.
+CI runs `pytest tests -q` (and the `tests/*.cjs` Node scripts) whenever a `tests/`
+tree is present, so the upstream repository's own test package does not collide
+with this project's `tests/conftest.py`. `tests/` is not versioned (see
+`.gitignore`), so in a plain checkout those steps report "not versioned" and skip;
+`compileall`, the JavaScript syntax check and `git diff --check` still run.
