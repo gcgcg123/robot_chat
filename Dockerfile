@@ -15,7 +15,7 @@ WORKDIR /app
 # Optional extras are opt-in build args: the base image stays ~110 MB of packages, and
 # the two heavy sets are only added when the matching feature is actually wanted.
 ARG WITH_VOICEPRINT=0
-COPY requirements.txt requirements-asr-whisper.txt requirements-voiceprint.txt ./
+COPY requirements.txt requirements-asr-whisper.txt requirements-voiceprint.txt requirements-rerank.txt ./
 # This image defaults to ASR_PROVIDER=whisper (see ENV above), so the Whisper runtime is
 # part of the image. It is small (~65 MB) compared with the voiceprint set.
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-asr-whisper.txt
