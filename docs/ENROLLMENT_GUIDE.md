@@ -33,7 +33,7 @@
 
 正式啟動預設使用 SpeechBrain ECAPA-TDNN（`ecapa-voxceleb-v1`），登記及識別只會比較相同模型版本的模板。未知聲音或分數不夠會回傳 unknown，兩個使用者分數太接近會回傳 ambiguous；WebSocket 也會在後端驗證 active template，不能只靠前端傳入 user_id。
 
-模型首次使用時會下載到 `models/voiceprint/ecapa-voxceleb`。預設門檻兼顧日常語氣變化與陌生人拒識（`VOICEPRINT_THRESHOLD=0.55`、`VOICEPRINT_MIN_MARGIN=0.05`），可用環境變數調整；正式部署前必須用實際麥克風、噪音、距離和不同語言的真人樣本校準 FAR/FRR。測試模式仍使用 pc-baseline 替身，不代表真實聲紋準確率。切換模型版本後所有使用者都需要重新登記。
+模型首次使用時會下載到 `models/voiceprint/ecapa-voxceleb`。這組相依（`speechbrain`、`torch`、`torchaudio`，約 730 MB）不在 `requirements.txt`，要用聲紋必須另外安裝 `requirements-voiceprint.txt`；沒裝時登記會回 503 並附上指令，`/health` 會列出 `voiceprint_dependencies_missing`，**不會**退回 `VOICEPRINT_PROVIDER=baseline`——那個 provider 只回傳均值、有效值、過零率三個數字，無法分辨說話者，僅供測試。要一次裝好並預抓模型：`scripts\bootstrap-project.ps1 -WithVoiceprint`。預設門檻兼顧日常語氣變化與陌生人拒識（`VOICEPRINT_THRESHOLD=0.55`、`VOICEPRINT_MIN_MARGIN=0.05`），可用環境變數調整；正式部署前必須用實際麥克風、噪音、距離和不同語言的真人樣本校準 FAR/FRR。測試模式仍使用 pc-baseline 替身，不代表真實聲紋準確率。切換模型版本後所有使用者都需要重新登記。
 
 ## 驗證及備份
 

@@ -42,6 +42,8 @@ ASR 後端由 `configs/launcher.json` 的 `asr_provider` 決定（`sensevoice` �
 一鍵啟動.bat
 ```
 
+安裝腳本不會把依賴裝進系統 Python：若沒有指定 `IOT_PYTHON`，它會建立專案 `.venv` 並把依賴裝進那裡（需要 Python 3.10 或更新版本）。要用既有的 conda／venv 環境，就把該環境的 `python.exe` 填進 `.env` 的 `IOT_PYTHON`（見下方「手動啟動備援」），那是明確指定，腳本不會再動 `.venv`。
+
 修改程式時使用 `開發模式.bat`，結束時使用 `一鍵停止.bat`。詳細說明見 `docs/STARTUP_GUIDE.md`。
 
 啟動器會驗證程序的 PID、建立時間、執行檔和命令列 ownership，避免誤停止其他專案的程序。
@@ -71,9 +73,9 @@ uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 
 ## 目前端點
 
-三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。目前聲紋仍是示範模型，PC 以所選使用者模擬對話歸屬。
+三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。聲紋辨識（ECAPA-TDNN，192 維、CPU 推論）需要選用依賴才會啟用：沒安裝時登記會回 503 並附上安裝指令，`/health` 會列出 `voiceprint_dependencies_missing`——不會退回只能測出三個聲學數字的替身 provider，因為那樣的登記等於沒有辨識能力。PC 端仍以所選使用者模擬對話歸屬。
 
-- `GET /health`：服務狀態（含 `asr_backend` 與使用的模型路徑）
+- `GET /health`：服務狀態（含 `asr_backend`、使用的模型路徑、`knowledge_chunks`/`knowledge_mode` 與聲紋缺件診斷）
 - `POST /api/chat`：文字對話、情緒標籤、SQLite 紀錄
 - `POST /api/transcribe`：WAV/audio 轉寫（後端由 `ASR_PROVIDER` 決定：SenseVoice 或 faster-whisper）
 - `GET /api/conversations`：Dashboard 資料

@@ -12,8 +12,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     IOT_EMBEDDING_MODEL_PATH=/models/embedding/bge-small-zh-v1.5
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Optional extras are opt-in build args: the base image stays ~110 MB of packages, and
+# the two heavy sets are only added when the matching feature is actually wanted.
+ARG WITH_VOICEPRINT=0
+COPY requirements.txt requirements-asr-whisper.txt requirements-voiceprint.txt ./
+# This image defaults to ASR_PROVIDER=whisper (see ENV above), so the Whisper runtime is
+# part of the image. It is small (~65 MB) compared with the voiceprint set.
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-asr-whisper.txt
+RUN if [ "$WITH_VOICEPRINT" = "1" ]; then pip install --no-cache-dir -r requirements-voiceprint.txt; fi
 COPY services ./services
 COPY simulator ./simulator
 COPY configs ./configs

@@ -1,0 +1,15 @@
+# OPTIONAL: the Whisper ASR backend (ASR_PROVIDER=whisper).
+#
+#   python -m pip install -r requirements-asr-whisper.txt
+#
+# SenseVoice-Small is the default backend: a 228 MB model, no torch, no CTranslate2,
+# roughly 0.5 s per utterance on a CPU-only laptop. This file exists for the Whisper
+# fallback, which adds ~65 MB of runtime dependencies and needs its own 1.5 GB model.
+#
+# The package is imported lazily inside services/audio/asr.py's model factory, so the
+# service starts, transcribes and remembers without it; only ASR_PROVIDER=whisper needs
+# it, and then the failure message names this file.
+#
+# scripts/bootstrap-project.ps1 installs it automatically for -AsrModel whisper (or
+# both), and it can also be requested directly with -WithWhisper.
+faster-whisper>=1.1,<2

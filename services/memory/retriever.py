@@ -74,6 +74,7 @@ def score_chunk(
     *,
     probe_weight: float = 1.0,
     text_weight: float = 0.25,
+    embedding_override: float | None = None,
 ) -> float:
     """Relevance of one memory for this question.
 
@@ -81,10 +82,17 @@ def score_chunk(
     the primary signal: measured separation for question-vs-question is 0.215 at
     worst, versus 0.001 for question-vs-statement.  The statement text is kept as
     a small secondary signal, and lexical bigrams cover the no-embedding path.
+
+    ``embedding_override`` lets a caller that already computed a better cosine supply it: the
+    knowledge base scores a chunk by its best *sentence window* (services/knowledge/windows.py),
+    which a single stored vector cannot express. Memory never passes it, so its behaviour is
+    unchanged.
     """
 
-    if query_vector is not None and chunk.embedding is not None:
-        probe_score = cosine(query_vector, chunk.embedding)
+    if query_vector is not None and (chunk.embedding is not None or embedding_override is not None):
+        probe_score = (
+            embedding_override if embedding_override is not None else cosine(query_vector, chunk.embedding)
+        )
         text_score = lexical_similarity(query, chunk.text)
         return probe_weight * probe_score + text_weight * text_score
     return max(

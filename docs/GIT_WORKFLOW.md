@@ -36,8 +36,10 @@ git push -u origin feature/<short-name>
 
 Use whichever interpreter runs the project: the launcher resolves it as
 `IOT_PYTHON` -> `configs/launcher.json`'s `python` -> project `.venv` -> `python`
-on PATH. `pytest` is not listed in `requirements.txt` yet, so install it in that
-same environment first (`python -m pip install pytest`).
+on PATH, and `bootstrap-project.ps1` creates the project `.venv` itself when none
+of the first four is configured. `pytest` lives in `requirements-dev.txt`, which
+includes `requirements.txt`, so install it in that same environment first
+(`python -m pip install -r requirements-dev.txt`).
 
 Do not commit `.env`, `data/`, `runtime/`, `logs/`, model weights, API keys,
 device tokens, voiceprint templates, raw audio or SQLite databases. Do not use

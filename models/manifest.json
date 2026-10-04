@@ -42,6 +42,49 @@
       },
       "env": "IOT_EMBEDDING_MODEL_PATH",
       "degraded_mode": "if the directory is missing the service still starts; scoring falls back to lexical similarity, which is weaker on Chinese"
+    },
+    {
+      "id": "voiceprint.ecapa-voxceleb",
+      "task": "speaker-verification",
+      "purpose": "speaker enrollment and identification: turns each utterance into a 192-dim ECAPA embedding that is compared by cosine similarity",
+      "optional": true,
+      "requires": "requirements-voiceprint.txt",
+      "source": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb",
+      "revision": "main",
+      "target_dir": "models/voiceprint/ecapa-voxceleb",
+      "loader": "speechbrain EncoderClassifier",
+      "required_files": ["hyperparams.yaml", "embedding_model.ckpt", "mean_var_norm_emb.ckpt", "classifier.ckpt", "label_encoder.ckpt"],
+      "checksums": {
+        "embedding_model.ckpt": "0575CB64845E6B9A10DB9BCB74D5AC32B326B8DC90352671D345E2EE3D0126A2",
+        "hyperparams.yaml": "6F78854FA04BA59E761437B76A2575D3ABA5E5016DE3E9B69F0C9A5077FB1A41",
+        "mean_var_norm_emb.ckpt": "CD70225B05B37BE64FC5A95E24395D804231D43F74B2E1E5A513DB7B69B34C33",
+        "classifier.ckpt": "FD9E3634FE68BD0A427C95E354C0C677374F62B3F434E45B78599950D860D535",
+        "label_encoder.ckpt": "E13C3A167BB4112685670EE896D20E2B565AF16B3A4CEEAA8689FA4D22ADB8B9"
+      },
+      "env": "VOICEPRINT_MODEL_DIR",
+      "degraded_mode": "enrollment and identification answer 503 with the install command; dialogue, ASR and long-term memory are unaffected. Fetched by bootstrap only with -WithVoiceprint, because the model is useless without the optional packages."
+    },
+    {
+      "id": "rerank.bge-reranker-base",
+      "task": "text-classification",
+      "purpose": "knowledge-base second stage: scores a (question, manual passage) pair together, which separates the answers the embedding cosine ranks 12th-15th",
+      "optional": true,
+      "requires": "requirements-voiceprint.txt (torch)",
+      "source": "https://modelscope.cn/models/BAAI/bge-reranker-base",
+      "revision": "master",
+      "target_dir": "models/rerank/bge-reranker-base",
+      "loader": "transformers AutoModelForSequenceClassification (local_files_only)",
+      "required_files": ["config.json", "model.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"],
+      "checksums": {
+        "config.json": "289ADF7ADA1EB6B4AFA7589A48A032D45A076CF2E46DCDB3B4CABC33BE14F708",
+        "model.safetensors": "CED967C45FD1902EB92716C9CEECA7C95A936770EA9DB611F5A841B926E33FBD",
+        "sentencepiece.bpe.model": "CFC8146ABE2A0488E9E2A0C56DE7952F7C11AB059ECA145A0A727AFCE0DB2865",
+        "special_tokens_map.json": "D5469A60DB23249C7F8945013D78DF30B44B6BF686C6BB4740F4223F77B1B535",
+        "tokenizer.json": "9EB652AC4E40CC093272BBBE0F55D521CF67570060227109B5CDC20945A4489E",
+        "tokenizer_config.json": "A1D6BC8734A6F635DC158508BEF000F8E2E5A759C7D92F984B2C86E5FF53425B"
+      },
+      "env": "IOT_KNOWLEDGE_RERANK(=local) + IOT_KNOWLEDGE_RERANK_MODEL",
+      "degraded_mode": "the second stage is off unless IOT_KNOWLEDGE_RERANK=local, and stays off when torch or the directory is missing; retrieval keeps working on the hybrid ranking alone. Fetched by bootstrap only with -WithRerank (1.06 GB, from ModelScope because huggingface.co times out here)."
     }
   ]
 }

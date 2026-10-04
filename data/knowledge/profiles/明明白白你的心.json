@@ -1,0 +1,19 @@
+{
+  "doc": "明明白白你的心",
+  "path_glob": "data/RAG_data/md/ocr/明明白白你的心*.md",
+  "source_label": "善待老年人",
+  "keep_sections": [],
+  "drop_sections": ["前言", "目录", "参考文献"],
+  "kind_rules": {
+    "scenario": [],
+    "reference": []
+  },
+  "default_kind": "reference",
+  "content_shape": {
+    "drop_pure_exercises": false,
+    "min_chars": 80,
+    "max_chars": 600,
+    "min_heading_level": 1
+  },
+  "floor_overrides": {}
+}

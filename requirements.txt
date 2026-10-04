@@ -3,15 +3,17 @@ uvicorn[standard]>=0.30,<1
 httpx>=0.27,<1
 python-dotenv>=1.0,<2
 python-multipart>=0.0.9,<1
-faster-whisper>=1.1,<2
 # SenseVoice-Small ONNX backend (ASR_PROVIDER=sensevoice). CPU wheels only; no torch.
+# This is the default backend. The Whisper backend is an extra:
+# see requirements-asr-whisper.txt.
 sherpa-onnx>=1.13,<2
-# Long-term memory recall. Both already arrive transitively (sherpa-onnx pulls
-# onnxruntime, faster-whisper pulls tokenizers) but memory must not silently break
-# if either backend is dropped, so they are declared here as well.
+# Long-term memory recall. Neither package needs torch: the embedding model is a 90 MB
+# ONNX graph run through onnxruntime. They are declared explicitly rather than relied on
+# transitively so recall cannot silently break if an ASR backend is ever dropped.
 onnxruntime>=1.17,<2
 tokenizers>=0.15,<1
-# ECAPA voiceprint recognition.
-speechbrain>=1.0,<2
-torch>=2.2,<3
-torchaudio>=2.2,<3
+# Speaker recognition (ECAPA through speechbrain) is deliberately NOT listed here: it
+# needs torch (~500 MB, ~730 MB with its dependencies) and nothing outside
+# services/voiceprint/provider.py imports any of it. See requirements-voiceprint.txt.
+# Enrollment without it fails loudly with an actionable message rather than degrading
+# to the placeholder provider, and /health reports voiceprint_dependencies_missing.
