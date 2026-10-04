@@ -69,7 +69,7 @@
       "task": "text-classification",
       "purpose": "knowledge-base second stage: scores a (question, manual passage) pair together, which separates the answers the embedding cosine ranks 12th-15th",
       "optional": true,
-      "requires": "requirements-voiceprint.txt (torch)",
+      "requires": "requirements-rerank.txt (torch + transformers)",
       "source": "https://modelscope.cn/models/BAAI/bge-reranker-base",
       "revision": "master",
       "target_dir": "models/rerank/bge-reranker-base",

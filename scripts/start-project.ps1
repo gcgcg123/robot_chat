@@ -72,7 +72,7 @@ function Resolve-AsrProvider {
 }
 
 if (-not $CheckOnly -and (-not $venvPython -or -not (Test-Path -LiteralPath $venvPython))) {
-    throw "No Python interpreter found. Run the first-time setup batch file, set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
+    throw "No Python interpreter found. Install Python 3.10 or newer and double-click 一鍵安裝並啟動.bat, or set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
 }
 
 # A resolved interpreter that cannot import the app's dependencies is the failure
@@ -82,11 +82,21 @@ if (-not $CheckOnly -and (-not $venvPython -or -not (Test-Path -LiteralPath $ven
 # one, before anything is started.
 $interpreterRunnable = $false
 if ($venvPython -and (Test-Path -LiteralPath $venvPython)) {
-    & $venvPython -c "import uvicorn" | Out-Null
-    $interpreterRunnable = ($LASTEXITCODE -eq 0)
+    # PowerShell 5.1 turns a native command's stderr into a *terminating* error while
+    # $ErrorActionPreference is 'Stop', so this probe used to abort with a raw traceback on exactly
+    # the machine it exists for -- a fresh one whose PATH Python has none of the dependencies --
+    # instead of reporting python_runnable=false. Measured in a clean clone on 2026-10-03.
+    $probePreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $venvPython -c "import uvicorn" 2>$null | Out-Null
+        $interpreterRunnable = ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $probePreference
+    }
 }
 if (-not $CheckOnly -and -not $interpreterRunnable) {
-    throw "The interpreter '$venvPython' cannot import the project's dependencies (uvicorn), so the service would exit immediately. Point the project at the environment that has them: put IOT_PYTHON=<env>\python.exe in .env (machine-local and gitignored), or fill in 'python' in configs\launcher.json. Then run .\scripts\bootstrap-project.ps1 to install the dependencies there."
+    throw "The interpreter '$venvPython' cannot import the project's dependencies (uvicorn), so the service would exit immediately. Point the project at the environment that has them: put IOT_PYTHON=<env>\python.exe in .env (machine-local and gitignored), or fill in 'python' in configs\launcher.json. Then double-click 一鍵安裝並啟動.bat (or run .\scripts\bootstrap-project.ps1) to install the dependencies there."
 }
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir, $LogDir | Out-Null

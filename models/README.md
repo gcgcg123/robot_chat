@@ -72,6 +72,8 @@ acoustic numbers and cannot tell speakers apart.
 - Repository: `BAAI/bge-reranker-base` (on ModelScope)
 - Target: `models/rerank/bge-reranker-base`
 - Runtime: `transformers` + `torch` (`IOT_KNOWLEDGE_RERANK=local`), CPU only
+- Packages: `requirements-rerank.txt` (torch + transformers + safetensors, ~600 MB).
+  `-WithRerank` installs them and then downloads the weights, in that order.
 - Size: **~1.06 GB** (`model.safetensors` is 1,112,206,140 B; six files in
   total, each with its SHA-256 in `models/manifest.json`)
 - Purpose: a cross-encoder that reads a question and a manual passage together,

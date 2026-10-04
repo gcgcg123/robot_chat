@@ -180,6 +180,6 @@ function Resolve-ProjectPython {
     $resolved = Resolve-ProjectPythonDetail -ProjectRoot $ProjectRoot
     if ($resolved.Path) { return $resolved.Path }
     if ($Quiet) { return $null }
-    throw "No Python interpreter found. Run the first-time setup, set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
+    throw "No Python interpreter found. Install Python 3.10 or newer and double-click 一鍵安裝並啟動.bat, set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
 }
 

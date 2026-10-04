@@ -1,0 +1,19 @@
+# Knowledge-base reranker (IOT_KNOWLEDGE_RERANK=local): a local cross-encoder that reads a question
+# and a manual passage together and re-ranks the candidate pool.
+#
+# WHY ITS OWN FILE. torch alone is ~500 MB; requirements.txt stays at ~110 MB and torch-free on
+# purpose, so this is a per-feature decision, never a default. Bootstrap installs it only with
+# -WithRerank, which also fetches the 1.06 GB of weights from ModelScope
+# (scripts/download-rerank-model.py). The feature itself is OFF by default.
+#
+# WHY IT IS STILL OFF BY DEFAULT even with these packages installed: measured on this corpus it
+# answers 27/28 calibration questions instead of 26/28, but its own score bands overlap the ones it
+# must reject (lowest correct -1.67 vs highest should-not-answer +1.53), so a question the manual
+# does not cover gets passages as confidently as a real hit -- and it costs ~8 s per sub-question on
+# a 4-core CPU. See docs/RAG_KNOWLEDGE_PLAN.md A9.7.15 for the numbers behind that decision.
+#
+# Versions: transformers 5.x is what was measured (5.18.0); safetensors is what the weights ship in.
+# The upper bounds exist because transformers' major versions move fast enough to break loaders.
+torch>=2.2,<3
+transformers>=4.40,<6
+safetensors>=0.4

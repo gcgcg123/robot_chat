@@ -97,6 +97,14 @@ if ($WithVoiceprint) {
     Write-Host "note: speaker recognition is not installed; enrollment will answer 503 until you run:" -ForegroundColor DarkGray
     Write-Host "        powershell -ExecutionPolicy Bypass -File scripts\bootstrap-project.ps1 -WithVoiceprint" -ForegroundColor DarkGray
 }
+# The knowledge-base reranker needs torch + transformers, and neither is in requirements.txt.
+# Installing the packages is not enough to turn the feature on -- IOT_KNOWLEDGE_RERANK stays 0 --
+# so this only happens when someone asks for it by name.
+if ($WithRerank) {
+    Write-Host "Installing the optional reranker packages (torch + transformers; ~600 MB)..." -ForegroundColor Cyan
+    & $python -m pip install -r (Join-Path $projectRoot "requirements-rerank.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Reranker dependency installation failed." }
+}
 
 # .env is gitignored, so a fresh clone does not have one. Create it from the
 # tracked example; the launcher still overrides everything it needs.
