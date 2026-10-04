@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -237,6 +237,32 @@ def _ensure_knowledge_probe(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_chunks ADD COLUMN probe TEXT")
 
 
+def _ensure_conversation_summary(conn: sqlite3.Connection) -> None:
+    """Schema version 9: one rolling summary per user, for turns older than the verbatim window.
+
+    Measured reason: the prompt only ever replayed the last few exchanges, so turn 11 could not
+    refer to turn 10 (and before this work, to nothing at all -- "你刚刚说了什么" was answered
+    "我還沒開口"). Raising the window alone just moves the cliff; the summary carries everything
+    older than the window in a few sentences instead.
+
+    ``covered_count`` is a *count of the user's turns*, not a timestamp: conversations can share a
+    ``created_at`` second, and every read of this table is ordered the same way
+    (``created_at, rowid``) so a count is exact where a timestamp would need a tie-break twice.
+    """
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS conversation_summaries (
+            user_id TEXT PRIMARY KEY,
+            summary TEXT NOT NULL,
+            covered_count INTEGER NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        );
+        """
+    )
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply all local migrations and return the resulting schema version."""
 
@@ -250,6 +276,7 @@ def migrate(conn: sqlite3.Connection) -> int:
     _ensure_memory_columns(conn)
     _make_user_nullable(conn)
     _ensure_knowledge_schema(conn)
+    _ensure_conversation_summary(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return SCHEMA_VERSION

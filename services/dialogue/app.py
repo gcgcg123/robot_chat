@@ -39,6 +39,7 @@ from services.device_gateway.contracts import DeviceEvent as ProtocolEvent
 from services.dialogue.deepseek import DeepSeekClient
 from services.dialogue.identity import conversation_identity
 from services.dialogue.pipeline import process_text
+from services.dialogue.summary import short_term_context
 from services.dialogue.turns import TurnRegistry
 from services.security.auth import _session, create_session, require_admin, require_device, require_csrf, set_session_cookie, SESSION_COOKIE
 from services.security.audit import record_audit
@@ -290,6 +291,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     def _chat(req: ChatRequest, request: Request | None = None) -> ChatResponse:
         identity = conversation_identity(req.user_id, req.voiceprint_id)
         settings = memory_config
+        # Built before the connection block because the rolling summary may need it: refreshing the
+        # summary is an extra LLM request, and it only happens every few turns.
+        llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
         with db() as conn:
             if request is not None:
                 admin_auth(request, conn, write=True)
@@ -303,7 +307,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 settings=settings,
             )
             memories = recall.selected
-        llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
+            # Short-term continuity, read in the same connection: the last few turns verbatim plus a
+            # rolling summary of everything older. Without it a second turn could not refer to the
+            # first (measured: "你刚刚说了什么" was answered "我還沒開口").
+            short_term = short_term_context(conn, req.user_id, llm=llm)
         result = process_text(
             req.text,
             user_id=req.user_id,
@@ -313,6 +320,8 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             llm=llm,
             rag_provider=providers.get("rag") or getattr(application.state, "knowledge_provider", None),
             memories=memories,
+            history=short_term.history,
+            summary=short_term.summary,
             request_id=str(uuid.uuid4()),
             memory_settings=settings,
         )
@@ -901,6 +910,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "thinking", "emotion": "neutral", "caption": "正在理解…"}).as_dict())
                 req = ChatRequest(user_id=str(message.get("user_id") or "sim-user"), text=text, device_id=device_id, voiceprint_id=message.get("voiceprint_id"))
                 identity = conversation_identity(req.user_id, req.voiceprint_id)
+                llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
                 with db() as conn:
                     recall = select_for_turn(
                         conn,
@@ -910,6 +920,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         embedder=embedding_provider.embed_queries if embedding_provider.available else None,
                         settings=memory_config,
                     )
+                    short_term = short_term_context(conn, req.user_id, llm=llm)
                 try:
                     result = await asyncio.to_thread(process_text,
                         text,
@@ -918,9 +929,11 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         identity=identity,
                         session_id=session_id,
                         turn_id=turn_id,
-                        llm=None if runtime.testing else providers.get("deepseek") or DeepSeekClient(),
+                        llm=llm,
                         rag_provider=providers.get("rag") or getattr(application.state, "knowledge_provider", None),
                         memories=recall.selected,
+                        history=short_term.history,
+                        summary=short_term.summary,
                         request_id=request_id,
                         memory_settings=memory_config,
                     )
