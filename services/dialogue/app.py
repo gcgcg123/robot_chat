@@ -64,6 +64,11 @@ from services.memory.repository import apply_turn, evaluate_tiers, set_tier, tie
 from services.memory.schemas import TIERS
 from services.tts.config import create_tts_provider
 from services.tts.media_store import MediaStore
+from services.device_gateway.xiaozhi.config import EspSettings
+from services.device_gateway.xiaozhi.context import GatewayContext
+from services.device_gateway.xiaozhi.opus_codec import opus_status
+from services.device_gateway.xiaozhi.registry import CommandBus, LiveRegistry, ObserverHub, ToolRegistry
+from services.device_gateway.xiaozhi.router import mount_xiaozhi_routes
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
@@ -186,6 +191,17 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         )
         application.state.tts_provider = providers.get("tts") or create_tts_provider()
         application.state.media_store = MediaStore(runtime.data_dir / "media")
+        # The ESP access layer deliberately reuses these very instances, so a
+        # device turn and a simulator turn really do run the same pipeline
+        # (same ASR queue, same TTS provider, same turn registry).
+        esp_ctx.asr_worker = application.state.asr_worker
+        esp_ctx.tts_provider = application.state.tts_provider
+        esp_ctx.turn_registry = application.state.turn_registry
+        # Same provider instance as /api/voiceprint/*, so a device turn is matched
+        # against exactly the templates an operator enrolled and identifies
+        # through -- one provider version, one template set, one threshold.
+        esp_ctx.voiceprint_provider = application.state.voiceprint_provider
+        esp_ctx.bind_loop(asyncio.get_running_loop())
         yield
         application.state.asr_worker.shutdown()
 
@@ -237,6 +253,38 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 )
             conn.commit()
         return conversation_id
+
+    # --- ESP32 (xiaozhi protocol) access layer ---------------------------------
+    # Mounted additively: every ESP route lives in services/device_gateway/xiaozhi
+    # and none of them shadows an existing route. Before the first request the
+    # lifespan above fills in the worker/provider/registry instances.
+    esp_ctx = GatewayContext(
+        settings=EspSettings.from_env(),
+        runtime=runtime,
+        providers=providers,
+        db=db,
+        embedding_provider=embedding_provider,
+        memory_config=memory_config,
+        asr_worker=None,
+        tts_provider=None,
+        turn_registry=None,
+        observer=ObserverHub(),
+        live=LiveRegistry(),
+        tools=ToolRegistry(),
+        commands=CommandBus(),
+        admin_auth=admin_auth,
+        record_audit=record_audit,
+        save_conversation=save_conversation,
+        user_language=user_language,
+        process_text=process_text,
+        select_for_turn=select_for_turn,
+        apply_turn=apply_turn,
+        testing=runtime.testing,
+        opus=opus_status(),
+        env_path=ROOT / ".env",
+    )
+    mount_xiaozhi_routes(application, esp_ctx)
+    application.state.esp_context = esp_ctx
 
     @application.get("/health")
     def health() -> dict[str, Any]:
@@ -1035,6 +1083,20 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     def dashboard_user(user_id: str, request: Request) -> str:
         with db() as conn: admin_auth(request, conn)
         return (ROOT / "services" / "dashboard" / "user_detail.html").read_text(encoding="utf-8")
+
+    @application.get("/dashboard/devices", response_class=HTMLResponse)
+    def dashboard_devices() -> str:
+        """Device onboarding page: LAN address, OTA URL, bindings, firmware."""
+        # Served like /dashboard: the HTML is a static template with no data in
+        # it, it embeds the login flow, and every API it calls is admin-gated.
+        return (ROOT / "services" / "dashboard" / "devices.html").read_text(encoding="utf-8")
+
+    @application.get("/dashboard/device/{device_id}", response_class=HTMLResponse)
+    def dashboard_device(device_id: str) -> str:
+        """Single-device view: live state, subtitles, command dispatch."""
+        # Same reasoning as above; the page redirects to /dashboard when the
+        # session is missing (see device_detail.js bootstrapSession).
+        return (ROOT / "services" / "dashboard" / "device_detail.html").read_text(encoding="utf-8")
 
     return application
 

@@ -17,24 +17,47 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "launcher-common.ps1")
 
-function Repair-ProcessEnvironmentPath {
+function Repair-ProcessEnvironmentDuplicates {
     <#
-        Start-Process fails when the current Windows process contains both
-        "PATH" and "Path" entries. Some shells (notably Codex/agent launchers)
-        produce that duplicate block. Normalise the current process to a single
-        "Path" entry before any child process is launched.
+        Start-Process fails with "An item with the same key has already been
+        added" when the current process environment block holds two names that
+        differ only by case: Windows compares environment names
+        case-insensitively, so "Path"/"PATH" and "HTTPS_PROXY"/"https_proxy"
+        collide while the child environment dictionary is built.
+
+        It only surfaces when the launch has to build that dictionary, which is
+        why a plain Start-Process can look healthy while the service launch
+        (the one with -RedirectStandardOutput) dies. Agent/CI shells and proxy
+        tools that export both spellings produce the pair.
+
+        Keep the first spelling of each name and drop the later ones. Lookups
+        stay correct because Windows compares the names case-insensitively.
     #>
-    $pathValue = $env:Path
-    [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
-    [Environment]::SetEnvironmentVariable("Path", $null, "Process")
-    [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+    $names = @([Environment]::GetEnvironmentVariables("Process").Keys)
+    $seen = @{}
+    $duplicates = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $names) {
+        $folded = ([string]$name).ToLowerInvariant()
+        if ($seen.ContainsKey($folded)) {
+            $duplicates.Add([string]$name)
+        } else {
+            $seen[$folded] = $true
+        }
+    }
+    foreach ($name in $duplicates) {
+        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
 }
 
-Repair-ProcessEnvironmentPath
+Repair-ProcessEnvironmentDuplicates
 
 $configPath = Join-Path $projectRoot "configs\launcher.json"
 $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
 $hostAddress = [string]$config.host
+# "0.0.0.0" is a bind address, not a dialable one. The ESP32 needs the socket
+# to accept LAN connections, but the health probe, the browser and the local
+# heartbeat should keep talking to loopback.
+$clientHost = if ([string]::IsNullOrWhiteSpace($hostAddress) -or $hostAddress -eq "0.0.0.0" -or $hostAddress -eq "::") { "127.0.0.1" } else { $hostAddress }
 $actualPort = if ($Port -gt 0) { $Port } else { [int]$config.port }
 if (-not $RuntimeDir) { $RuntimeDir = Join-Path $projectRoot "runtime" }
 if (-not $LogDir) { $LogDir = Join-Path $projectRoot "logs" }
@@ -44,8 +67,8 @@ if (-not $AdminSecretFile) { $AdminSecretFile = Join-Path $projectRoot "data\sec
 # the C: drive. An explicit -DataDir or IOT_DATA_DIR still wins.
 if (-not $DataDir) { $DataDir = if ($env:IOT_DATA_DIR) { $env:IOT_DATA_DIR } else { Join-Path $projectRoot "IoTGroup5" } }
 $venvPython = Resolve-ProjectPython -ProjectRoot $projectRoot -Quiet
-$dashboardUrl = "http://${hostAddress}:${actualPort}/dashboard"
-$healthUrl = "http://${hostAddress}:${actualPort}/health"
+$dashboardUrl = "http://${clientHost}:${actualPort}/dashboard"
+$healthUrl = "http://${clientHost}:${actualPort}/health"
 
 function Resolve-AsrProvider {
     <#
@@ -151,14 +174,10 @@ if ($CheckOnly) {
 }
 
 function Read-EncryptedSecret([string]$Path) {
-    $encrypted = Get-Content -Raw -LiteralPath $Path
-    $secure = ConvertTo-SecureString $encrypted
-    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try {
-        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
-    } finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
-    }
+    # The DPAPI read lives in launcher-common.ps1 so setup and start agree on
+    # both the failure mode and the message.  Kept as a thin alias because the
+    # rest of this launcher reads better with the local name.
+    return Read-DpapiSecret -Path $Path
 }
 
 if ($env:IOT_TESTING -eq "1" -or $env:IOT_TESTING -eq "true") {
@@ -242,6 +261,23 @@ function Test-ProjectServiceProcess([int]$ProcessId) {
     return ($commandLine -match 'uvicorn' -and $commandLine -match 'services\.dialogue\.app:app')
 }
 
+function Get-PortOwnerDescription([int]$ProcessId) {
+    # A bare PID ("in use by another process (PID 12312)") leaves the operator
+    # guessing which program to close, so name the process -- and when it is a
+    # Windows service, name the service, because killing it once will not help:
+    # an auto-start service reclaims the port at every boot.
+    if ($ProcessId -le 0) { return "an unknown process" }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    if (-not $process) { return "PID $ProcessId" }
+    $description = "$([string]$process.Name) (PID $ProcessId)"
+    $service = Get-CimInstance Win32_Service -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($service) {
+        $description += " - Windows service '$([string]$service.DisplayName)' ($([string]$service.Name), start mode $([string]$service.StartMode))"
+    }
+    return $description
+}
+
 $serviceStateFile = Join-Path $RuntimeDir "service.json"
 $heartbeatStateFile = Join-Path $RuntimeDir "heartbeat.json"
 $lockFile = Join-Path $RuntimeDir "start.lock"
@@ -277,7 +313,12 @@ try {
                 Stop-ProcessTree -TargetProcessId $portOwner
                 Start-Sleep -Milliseconds 500
             } else {
-                throw "Port ${actualPort} is already in use by another process (PID $portOwner). Close it or change the port in configs\launcher.json."
+                $ownerDescription = Get-PortOwnerDescription -ProcessId $portOwner
+                $hint = "Close that program, or change the port in configs\launcher.json."
+                if ($ownerDescription -match "Windows service") {
+                    $hint = "It is a Windows service, so it will reclaim the port after every reboot. Either stop it from an elevated shell (Stop-Service; then Set-Service -StartupType Manual), or change the port in configs\launcher.json."
+                }
+                throw "Port ${actualPort} is already in use by ${ownerDescription}. ${hint}"
             }
         }
         $serviceArguments = @(
@@ -314,7 +355,9 @@ $heartbeatEnabled = [bool]$config.heartbeat_enabled -and -not $NoHeartbeat
 if ($heartbeatEnabled) {
     $runId = [guid]::NewGuid().ToString("N")
     # Module invocation and explicit argument quoting also work from paths with spaces.
-    $heartbeatArguments = @("-u", "-m", "simulator.heartbeat", "--url", "http://${hostAddress}:${actualPort}/api/device/heartbeat", "--device-id", [string]$config.simulator_device_id, "--interval", ([int]$config.heartbeat_interval_seconds).ToString(), "--status-file", (Join-Path $LogDir "heartbeat-status.json"), "--run-id", $runId)
+    # The heartbeat simulator sends the managed local credential, which it only
+    # allows to loopback -- so it must never be pointed at the bind address.
+    $heartbeatArguments = @("-u", "-m", "simulator.heartbeat", "--url", "http://${clientHost}:${actualPort}/api/device/heartbeat", "--device-id", [string]$config.simulator_device_id, "--interval", ([int]$config.heartbeat_interval_seconds).ToString(), "--status-file", (Join-Path $LogDir "heartbeat-status.json"), "--run-id", $runId)
     if ([string]::IsNullOrWhiteSpace($DeviceToken)) {
         # The local helper renews only this device's session, including during long runs.
         $heartbeatArguments += @("--local-data-dir", $DataDir)

@@ -49,7 +49,11 @@ models/**
 # clone simply starts with an empty one and imports its own licensed corpus. Profiles and
 # calibration sets ARE versioned (data/knowledge/), because they contain rules and questions,
 # not book text. See docs/RAG_KNOWLEDGE_PLAN.md A9.7.7.
+# The trailing '*' also covers archives of the corpus (e.g. data/RAG_data.rar, 55.5 MB, created
+# 2026-10-05): the rule above matches the directory only, so a zipped copy next to it showed up as
+# an ordinary untracked file and the next `git add -A` would have pushed the scans back into Git.
 data/RAG_data/
+data/RAG_data*
 
 # Local editor and OS files.
 .vs/

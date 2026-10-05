@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 9
+# 10 = our 9 (rolling conversation summary, schema v7-v9) plus the ESP device columns merged in from
+# the xiaozhi branch, which add transport / board_model / identity_verified / ... to `devices`.
+SCHEMA_VERSION = 10
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -88,6 +90,28 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS simulator_preferences (
             actor_id TEXT PRIMARY KEY, selected_user_id TEXT, updated_at REAL NOT NULL
         );
+        -- ESP32 (xiaozhi protocol) access layer. Kept separate from the
+        -- simulator tables so the existing read model needs no change.
+        CREATE TABLE IF NOT EXISTS device_sessions (
+            session_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, user_id TEXT,
+            transport TEXT NOT NULL DEFAULT 'esp_ws', protocol_version INTEGER,
+            client_ip TEXT, board_model TEXT, firmware TEXT,
+            started_at REAL NOT NULL, ended_at REAL, turn_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_sessions_device ON device_sessions(device_id, started_at DESC);
+        CREATE TABLE IF NOT EXISTS device_commands (
+            command_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, type TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending',
+            actor_id TEXT, created_at REAL NOT NULL, sent_at REAL, reason TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_commands_device ON device_commands(device_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS ota_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, client_id TEXT,
+            board_model TEXT, device_version TEXT, client_ip TEXT,
+            granted_ws_url TEXT, created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ota_requests_device ON ota_requests(device_id, created_at DESC);
         """
     )
 
@@ -263,6 +287,32 @@ def _ensure_conversation_summary(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_device_columns(conn: sqlite3.Connection) -> None:
+    """Additive migration for ESP32 devices.
+
+    ``transport`` separates a real board (``esp_ws``/``esp_ota``) from the
+    browser simulator, so the dashboard can label them without a second table.
+    Existing rows keep ``NULL`` and are reported as ``simulator`` by the read
+    layer, which is what they are.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+    additions = (
+        ("transport", "TEXT"),
+        ("protocol_version", "INTEGER"),
+        ("board_model", "TEXT"),
+        ("client_id", "TEXT"),
+        ("bound_user_id", "TEXT"),
+        ("last_state", "TEXT"),
+        ("last_session_at", "REAL"),
+        ("first_seen_at", "REAL"),
+        ("identity_verified", "INTEGER NOT NULL DEFAULT 0"),
+    )
+    for name, ddl in additions:
+        if name not in columns:
+            conn.execute(f"ALTER TABLE devices ADD COLUMN {name} {ddl}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_transport ON devices(transport, last_seen DESC)")
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply all local migrations and return the resulting schema version."""
 
@@ -274,6 +324,7 @@ def migrate(conn: sqlite3.Connection) -> int:
     _create_schema(conn)
     _ensure_user_status(conn)
     _ensure_memory_columns(conn)
+    _ensure_device_columns(conn)
     _make_user_nullable(conn)
     _ensure_knowledge_schema(conn)
     _ensure_conversation_summary(conn)

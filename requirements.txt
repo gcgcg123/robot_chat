@@ -17,3 +17,19 @@ tokenizers>=0.15,<1
 # services/voiceprint/provider.py imports any of it. See requirements-voiceprint.txt.
 # Enrollment without it fails loudly with an actionable message rather than degrading
 # to the placeholder provider, and /health reports voiceprint_dependencies_missing.
+# --- ESP32 (xiaozhi protocol) access layer ---
+# Small (a few MB) and listed here rather than in a separate features file: the ESP
+# gateway is one of the two device front-ends, and both entries below degrade loudly
+# rather than at import time (opus_codec imports lazily and reports its status).
+# Uplink/downlink audio is bare Opus, so a codec binding is required.
+opuslib_next>=1.3,<2
+# opuslib_next resolves libopus via ctypes.util.find_library("opus"), which
+# returns None on Windows unconditionally. PyOgg's wheel ships opus.dll; only the
+# file is used (never imported), and opus_codec patches find_library while
+# importing. Without it the ESP endpoints report Opus as unavailable instead of
+# silently degrading. PyOgg's releases are pre-release only, hence the explicit
+# alpha in the specifier (that is what lets pip pick it without --pre).
+pyogg>=0.6.14a1
+# Real speech for the device. The built-in providers emit silence, so without
+# this an ESP32 connects but stays mute. Needs network + ffmpeg (IOT_FFMPEG).
+edge-tts>=6.1,<8

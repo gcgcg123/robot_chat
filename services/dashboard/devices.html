@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>设备接入 · 心语 IoT 情绪陪伴后台</title>
+  <link rel="stylesheet" href="/dashboard-assets/dashboard.css?v=20260915-12" />
+  <link rel="stylesheet" href="/dashboard-assets/dashboard-polish.css?v=20260915-12" />
+  <link rel="stylesheet" href="/dashboard-assets/profile.css?v=20260915-12" />
+  <style>
+    .esp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+    .esp-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    .esp-card h3{margin:0 0 4px;font-size:15px}
+    .esp-card p.hint{margin:0 0 14px;color:var(--muted);font-size:12px}
+    .esp-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #f1f3f7}
+    .esp-toggle:first-of-type{border-top:0}
+    .esp-toggle label{font-size:13px;font-weight:600;color:#374151;display:flex;flex-direction:column;gap:2px}
+    .esp-toggle small{font-weight:400;color:var(--muted);font-size:11px}
+    .esp-switch{appearance:none;width:44px;height:25px;border-radius:999px;background:#d5dae3;position:relative;cursor:pointer;flex:none;transition:background .18s ease}
+    .esp-switch:checked{background:#10a37f}
+    .esp-switch::after{content:"";position:absolute;top:2px;left:2px;width:21px;height:21px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.28);transition:transform .18s ease}
+    .esp-switch:checked::after{transform:translateX(19px)}
+    .esp-switch:disabled{opacity:.5;cursor:not-allowed}
+    .esp-input{flex:none;width:150px;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:12.5px;color:#1f2937;background:#fff}
+    .esp-input:focus{outline:none;border-color:#10a37f}
+    .addr-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #f1f3f7}
+    .addr-row:first-of-type{border-top:0}
+    .addr-row .addr-label{flex:none;width:96px;color:var(--muted);font-size:12px}
+    .addr-row code{flex:1;min-width:0;font-size:12.5px;color:#1f2937;background:#f6f8fb;border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow:auto;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    .copy-btn{flex:none;border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 11px;font-size:12px;color:#3f3f46}
+    .copy-btn:hover{background:#f4f4f5}
+    .steps{counter-reset:step;display:grid;gap:12px}
+    .step{display:flex;gap:12px;align-items:flex-start}
+    .step::before{counter-increment:step;content:counter(step);flex:none;width:26px;height:26px;border-radius:50%;background:#1f1f1f;color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800}
+    .step div{font-size:13px;color:#374151;line-height:1.5}
+    .step b{display:block;color:#1f2937}
+    .badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700}
+    .badge.esp{background:#ccfbf1;color:#0f766e}
+    .badge.sim{background:#f1f3f7;color:#6b7280}
+    .badge.ota{background:#ede9fe;color:#6d28d9}
+    .badge.warn{background:#fef3c7;color:#b45309}
+    .badge.bad{background:#ffe4e6;color:#be123c}
+    .device-link{color:#1f2937;font-weight:700;text-decoration:none}
+    .device-link:hover{text-decoration:underline}
+    .fw-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid #f1f3f7;font-size:13px}
+    .fw-row:first-of-type{border-top:0}
+    .fw-row .meta{color:var(--muted);font-size:11px;margin-left:8px}
+    .danger-btn{border:1px solid #fecdd3;background:#fff;color:#be123c;border-radius:8px;padding:6px 10px;font-size:12px}
+    .danger-btn:hover{background:#fff1f2}
+    .esp-alert{display:none;margin:0 0 14px;padding:11px 14px;border-radius:12px;font-size:13px}
+    .esp-alert.show{display:block}
+    .esp-alert.bad{background:#fff1f2;border:1px solid #fecdd3;color:#9f1239}
+    .esp-alert.warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+    .esp-alert.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+    .table-wrap td small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+    .filter-bar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+    .filter-bar button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 13px;font-size:12px;color:#4b5563}
+    .filter-bar button.on{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+  </style>
+</head>
+<body>
+  <div id="landing-screen" class="landing-screen" hidden>
+    <section class="landing-hero">
+      <div class="landing-brand"><span class="brand-mark">♡</span><div><strong>心语</strong><small>IoT 情绪陪伴后台</small></div></div>
+      <p class="landing-eyebrow">安全、私密的情绪陪伴空间</p>
+      <h1>欢迎回来</h1>
+      <p class="landing-subtitle">让每一次对话，都从一句温柔问候开始。</p>
+      <button id="landing-login-btn" class="landing-login-btn" type="button">登录</button>
+      <div id="landing-login-panel" class="landing-login-panel" hidden>
+        <button id="landing-login-close" class="landing-login-close" type="button" aria-label="关闭">×</button>
+        <h2>管理员登录</h2>
+        <p>请使用您的后台账号与密码。</p>
+        <form id="login-form" class="login-card">
+          <label>管理员账号<input id="login-actor" name="actor_id" autocomplete="username" required value="admin"></label>
+          <label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
+          <button type="submit" class="primary-btn">登录</button>
+          <div id="login-error" class="form-error" role="alert"></div>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <div class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">♡</span><div><strong>心语</strong><small>IoT 情绪陪伴后台</small></div></div>
+      <nav>
+        <a class="nav-item" href="/dashboard#overview"><span class="nav-icon">⌂</span><span>总览</span></a>
+        <a class="nav-item" href="/dashboard#emotions"><span class="nav-icon">◌</span><span>情绪分析</span></a>
+        <a class="nav-item" href="/dashboard#devices"><span class="nav-icon">⌁</span><span>IoT 设备</span></a>
+        <a class="nav-item active" href="/dashboard/devices"><span class="nav-icon">⇄</span><span>设备接入</span></a>
+        <a class="nav-item" href="/dashboard#conversations"><span class="nav-icon">▤</span><span>对话记录</span></a>
+        <a class="nav-item" href="/dashboard#users"><span class="nav-icon">◎</span><span>用户列表</span></a>
+        <a class="nav-item" href="/dashboard#events"><span class="nav-icon">⚙</span><span>系统事件</span></a>
+      </nav>
+      <div class="sidebar-footer"><span class="sidebar-footer-bg" aria-hidden="true"></span><span class="sidebar-footer-content"><span class="demo-dot"></span> ESP32 真机接入</span></div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div><p class="eyebrow">局域网配对与固件下发</p><h1>设备接入</h1></div>
+        <div class="topbar-right">
+          <div id="service-status" class="status-badge pending">检查服务中…</div>
+          <button class="user-chip" id="topbar-user-link" type="button"><span class="user-avatar" id="topbar-avatar" aria-hidden="true">管</span><span class="user-name" id="topbar-username">管理员</span></button>
+        </div>
+      </header>
+
+      <div id="esp-alert" class="esp-alert"></div>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><h2>接入开关</h2><p>关闭后设备将无法握手；改动写入 .env 并立即生效</p></div>
+          <span class="panel-tag" id="opus-tag">Opus 检查中</span>
+        </div>
+        <div class="esp-grid">
+          <article class="esp-card">
+            <h3>ESP 接入服务</h3>
+            <p class="hint">设备 WebSocket 与 OTA 的总开关</p>
+            <div class="esp-toggle">
+              <label>启用接入<small>IOT_ESP_ENABLED</small></label>
+              <input id="esp-enabled" class="esp-switch" type="checkbox" />
+            </div>
+            <div class="esp-toggle">
+              <label>强制设备令牌<small>IOT_ESP_REQUIRE_TOKEN（需配置密钥）</small></label>
+              <input id="esp-require-token" class="esp-switch" type="checkbox" />
+            </div>
+            <div class="esp-toggle">
+              <label>启用 OTA 配网<small>IOT_OTA_ENABLED</small></label>
+              <input id="esp-ota-enabled" class="esp-switch" type="checkbox" />
+            </div>
+            <div class="esp-toggle">
+              <label>声纹识别说话人<small>IOT_ESP_VOICEPRINT（身份跟着声音走，不必绑定设备）</small></label>
+              <input id="esp-voiceprint-enabled" class="esp-switch" type="checkbox" />
+            </div>
+            <div class="esp-toggle">
+              <label>设备控制工具<small>IOT_ESP_TOOLS（音量／亮度等，需固件支持 MCP）</small></label>
+              <input id="esp-tools-enabled" class="esp-switch" type="checkbox" />
+            </div>
+            <div class="esp-toggle">
+              <label>静默多久后自动待机<small>IOT_ESP_STANDBY_SECONDS（秒；到点通知并结束会话）</small></label>
+              <input id="esp-standby-seconds" class="esp-input" type="number" min="5" max="3600" step="5" />
+            </div>
+            <div class="esp-toggle">
+              <label>待机提示语<small>IOT_ESP_STANDBY_NOTICE（留空则不发声，直接待机）</small></label>
+              <input id="esp-standby-notice" class="esp-input" type="text" maxlength="200" />
+            </div>
+          </article>
+
+          <article class="esp-card">
+            <h3>语音体验（对标小智官方）</h3>
+            <p class="hint">决定「说得快不快、能不能打断、长句会不会断」</p>
+            <div class="esp-toggle">
+              <label>流式回答<small>IOT_ESP_LLM_STREAM（首句说完就出声；关掉会等整段回答）</small></label>
+              <input id="esp-llm-stream" class="esp-switch" type="checkbox" />
+            </div>
+            <div class="esp-toggle">
+              <label>单句字数上限<small>IOT_ESP_TTS_MAX_CHARS（超过就在标点处切开，12–200）</small></label>
+              <input id="esp-tts-max-chars" class="esp-input" type="number" min="12" max="200" step="4" />
+            </div>
+            <div class="esp-toggle">
+              <label>非首句最小字数<small>IOT_ESP_TTS_MIN_CHARS（首句不受此限，1–50）</small></label>
+              <input id="esp-tts-min-chars" class="esp-input" type="number" min="1" max="50" step="1" />
+            </div>
+            <div class="esp-toggle">
+              <label>唤醒词静默期<small>IOT_ESP_WAKE_WORD_HOLD_SECONDS（秒；避开固件提示音，0–10）</small></label>
+              <input id="esp-wake-word-hold" class="esp-input" type="number" min="0" max="10" step="0.1" />
+            </div>
+            <p class="hint">说「停／别说了／安静」会立刻停下并继续聆听；说「退下／结束／拜拜」会听到告别语后回到待命。
+              两者都是整句精确匹配（上限 12 字），所以「我想结束这段关系」不会被误判成结束指令。</p>
+          </article>
+
+          <article class="esp-card">
+            <h3>接入地址</h3>
+            <p class="hint">必须使用局域网 IP，填写 127.0.0.1 会让设备连回自己</p>
+            <div class="addr-row"><span class="addr-label">OTA 地址</span><code id="addr-ota">—</code><button class="copy-btn" data-copy="addr-ota" type="button">复制</button></div>
+            <div class="addr-row"><span class="addr-label">WebSocket</span><code id="addr-ws">—</code><button class="copy-btn" data-copy="addr-ws" type="button">复制</button></div>
+            <div class="addr-row"><span class="addr-label">局域网 IP</span><code id="addr-lan">—</code><button class="copy-btn" data-copy="addr-lan" type="button">复制</button></div>
+            <div class="addr-row"><span class="addr-label">接入路径</span><code id="addr-path">—</code></div>
+          </article>
+
+          <article class="esp-card">
+            <h3>接入向导</h3>
+            <p class="hint">三步完成真机上线</p>
+            <div class="steps">
+              <div class="step"><div><b>烧录固件</b>使用下方固件包，或自行编译小智固件。</div></div>
+              <div class="step"><div><b>填写 OTA 地址</b>把上面的 OTA 地址写入设备配置并重启。</div></div>
+              <div class="step"><div><b>等待上线</b>设备会请求 OTA，随后出现在「已接入设备」。</div></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" id="pending-panel">
+        <div class="panel-heading">
+          <div><h2>待接入设备</h2><p>已请求 OTA 的设备。绑定可选：开启声纹识别后，身份会跟着说话人的声音走；绑定只是认不出声音时的后备默认值。</p></div>
+          <span class="panel-tag" id="pending-count">0</span>
+        </div>
+        <div id="pending-list" class="empty-state">尚无待接入设备</div>
+      </section>
+
+      <section class="panel" id="devices-panel">
+        <div class="panel-heading">
+          <div><h2>已接入设备</h2><p>含模拟器与 ESP 真机，点击设备名查看详情</p></div>
+          <button class="refresh-btn" id="refresh-devices">重新整理</button>
+        </div>
+        <div class="filter-bar" id="device-filter">
+          <button data-filter="all" class="on" type="button">全部</button>
+          <button data-filter="esp" type="button">仅 ESP</button>
+          <button data-filter="sim" type="button">仅模拟器</button>
+          <button data-filter="online" type="button">在线</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>设备</th><th>传输</th><th>协议</th><th>板型</th><th>绑定用户</th><th>最后心跳</th><th>状态</th></tr></thead>
+            <tbody id="device-rows"><tr><td colspan="7" class="empty-state">尚无设备接入</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="firmware-panel">
+        <div class="panel-heading">
+          <div><h2>固件管理</h2><p>文件名需为 <code>{板型}_{版本}.bin</code>，设备按版本号判断是否需要升级</p></div>
+          <div class="panel-actions">
+            <label class="refresh-btn" for="firmware-input">选择固件</label>
+            <input id="firmware-input" type="file" accept=".bin" hidden />
+            <button id="firmware-upload" class="primary-btn" type="button" disabled>上传</button>
+          </div>
+        </div>
+        <p class="muted" id="firmware-dir"></p>
+        <div id="firmware-list" class="empty-state">尚无固件</div>
+      </section>
+
+      <section class="panel system-panel">
+        <div class="panel-heading">
+          <div><h2>服务状态</h2><p>不显示任何 API key 或原始音频</p></div>
+          <button id="logout-btn" class="refresh-btn" type="button">退出登录</button>
+        </div>
+        <div class="system-grid">
+          <div><span>ESP 接入</span><strong id="stat-esp">—</strong></div>
+          <div><span>OTA 服务</span><strong id="stat-ota">—</strong></div>
+          <div><span>Opus 编解码</span><strong id="stat-opus">—</strong></div>
+          <div><span>局域网地址</span><strong id="stat-lan">—</strong></div>
+        </div>
+      </section>
+
+      <footer>情绪陪伴机器人 · 仅供技术研究与 IoT 项目展示，不提供医疗诊断。</footer>
+    </main>
+  </div>
+
+  <dialog id="admin-profile-dialog" class="profile-dialog">
+    <div class="profile-dialog-card">
+      <button id="profile-dialog-close" class="profile-dialog-close" type="button" aria-label="关闭">×</button>
+      <p class="eyebrow">个人展示设置</p>
+      <h2>修改管理员头像与昵称</h2>
+      <div class="avatar-section">
+        <span id="avatar-preview" class="profile-avatar" aria-hidden="true">管</span>
+        <label class="upload-btn" for="avatar-input">选择头像</label>
+        <input id="avatar-input" type="file" accept="image/*" hidden />
+      </div>
+      <label class="field">主页展示昵称<input id="nickname-input" maxlength="24" placeholder="仅用于主页右上角展示" /></label>
+      <p class="profile-hint">此昵称仅用于主页右上角展示，不会改变登录账号。</p>
+      <p id="profile-error" role="alert"></p>
+      <div class="profile-actions">
+        <button id="save-profile" class="primary-btn" type="button">保存</button>
+        <button id="profile-cancel" class="refresh-btn" type="button">取消</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/dashboard-assets/devices.js?v=20260915-12"></script>
+  <script src="/dashboard-assets/login.js?v=20260915-12"></script>
+  <script src="/dashboard-assets/profile.js?v=20260915-12"></script>
+</body>
+</html>
