@@ -1,12 +1,40 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import struct
 import math
 
+# Optional dependency set. Kept out of requirements.txt because torch dominates the
+# install size while only this module uses it; see requirements-voiceprint.txt.
+VOICEPRINT_REQUIREMENTS = "requirements-voiceprint.txt"
+VOICEPRINT_MODULES = ("torch", "torchaudio", "speechbrain")
+
+
+def missing_voiceprint_dependencies() -> list[str]:
+    """Names of the optional speaker-recognition packages that cannot be imported.
+
+    ``find_spec`` is used on purpose: importing torch costs hundreds of MB of RSS and
+    about a second, which is not acceptable on a ``/health`` probe. It also never
+    triggers the model download that ``speechbrain`` would.
+    """
+
+    missing: list[str] = []
+    for module in VOICEPRINT_MODULES:
+        try:
+            if importlib.util.find_spec(module) is None:
+                missing.append(module)
+        except (ImportError, ValueError):
+            # A partially installed or shadowed package raises instead of returning None.
+            missing.append(module)
+    return missing
+
 
 class VoiceprintProvider:
     model_version = "pc-baseline-v2"
+
+    def missing_dependencies(self) -> list[str]:
+        return []
 
     def embed(self, pcm16: bytes) -> list[float]:
         if not pcm16: raise ValueError("empty_audio")
@@ -39,6 +67,9 @@ class EcapaVoiceprintProvider:
         )
         self._model = None
 
+    def missing_dependencies(self) -> list[str]:
+        return missing_voiceprint_dependencies()
+
     def _load(self):
         if self._model is not None:
             return self._model
@@ -46,9 +77,14 @@ class EcapaVoiceprintProvider:
             from speechbrain.inference.speaker import EncoderClassifier
             from speechbrain.utils.fetching import LocalStrategy
         except ImportError as exc:
+            missing = ", ".join(missing_voiceprint_dependencies()) or "speechbrain"
             raise RuntimeError(
-                "Real voiceprint requires speechbrain and torch. "
-                "Install requirements.txt or set VOICEPRINT_PROVIDER=baseline for tests."
+                f"Real voiceprint needs the optional speaker-recognition packages ({missing}). "
+                f"Install them in the interpreter that runs this project: "
+                f"python -m pip install -r {VOICEPRINT_REQUIREMENTS} "
+                f"(or run scripts/bootstrap-project.ps1 -WithVoiceprint). "
+                f"VOICEPRINT_PROVIDER=baseline exists only for tests: it returns three "
+                f"acoustic numbers and cannot tell speakers apart."
             ) from exc
         self._model = EncoderClassifier.from_hparams(
             source=self.model_source,
@@ -90,7 +126,10 @@ class EcapaVoiceprintProvider:
         try:
             import torch
         except ImportError as exc:
-            raise RuntimeError("Real voiceprint requires torch.") from exc
+            raise RuntimeError(
+                f"Real voiceprint needs torch. Install the optional set: "
+                f"python -m pip install -r {VOICEPRINT_REQUIREMENTS}"
+            ) from exc
         samples = self._speech_samples(
             [value / 32768.0 for (value,) in struct.iter_unpack("<h", usable)]
         )
@@ -123,6 +162,15 @@ class EcapaVoiceprintProvider:
 
 
 def create_voiceprint_provider(testing: bool = False):
+    """Select the speaker-recognition provider.
+
+    The default is the real ECAPA model even when the optional packages are absent:
+    enrollment then fails with an actionable 503 instead of quietly switching to the
+    placeholder, because a voiceprint that cannot separate speakers is worse than an
+    obvious error. ``testing=True`` (the test suite) and an explicit
+    ``VOICEPRINT_PROVIDER=baseline`` are the only ways to get the placeholder.
+    """
+
     provider = os.getenv("VOICEPRINT_PROVIDER", "").strip().lower()
     if testing or provider == "baseline":
         return VoiceprintProvider()

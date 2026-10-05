@@ -1,6 +1,12 @@
 services:
   dialogue:
-    build: .
+    build:
+      context: .
+      args:
+        # Speaker recognition is an optional extra: build with WITH_VOICEPRINT=1 to add
+        # it (~730 MB, torch dominates). Without it enrollment answers 503 with the
+        # install command, and the placeholder provider is never used implicitly.
+        WITH_VOICEPRINT: ${WITH_VOICEPRINT:-0}
     container_name: iotgroup5-dialogue
     restart: unless-stopped
     ports:

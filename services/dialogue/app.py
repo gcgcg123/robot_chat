@@ -39,6 +39,7 @@ from services.device_gateway.contracts import DeviceEvent as ProtocolEvent
 from services.dialogue.deepseek import DeepSeekClient
 from services.dialogue.identity import conversation_identity
 from services.dialogue.pipeline import process_text
+from services.dialogue.summary import short_term_context
 from services.dialogue.turns import TurnRegistry
 from services.security.auth import _session, create_session, require_admin, require_device, require_csrf, set_session_cookie, SESSION_COOKIE
 from services.security.audit import record_audit
@@ -56,6 +57,9 @@ from services.memory.candidates import valid_slot_key
 from services.memory.embeddings import create_embedding_provider
 from services.memory.flywheel import MemorySettings, effective_score
 from services.memory.recall import select_for_turn
+from services.knowledge.repository import MATRIX_FILENAME as KNOWLEDGE_MATRIX_FILENAME
+from services.knowledge.rerank import create_reranker
+from services.knowledge.retriever import KnowledgeSettings, create_knowledge_provider
 from services.memory.repository import apply_turn, evaluate_tiers, set_tier, tier_counts, upsert_memory
 from services.memory.schemas import TIERS
 from services.tts.config import create_tts_provider
@@ -110,6 +114,11 @@ class ChatResponse(BaseModel):
     reply: str
     model: str
     latency_ms: int
+    # Which corpus chunks (or memories) the reply was grounded in, e.g.
+    # "溝通手冊 p18 › 二、老年人服務中的語言溝通". The pipeline has always computed this and
+    # the WebSocket payload always carried it; the HTTP route used to drop it, so a caller
+    # could not tell a grounded answer from a plausible one.
+    citations: list[str] = Field(default_factory=list)
 
 
 class HeartbeatRequest(BaseModel):
@@ -161,6 +170,20 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         application.state.turn_registry = TurnRegistry()
         application.state.enrollment_service = EnrollmentService()
         application.state.voiceprint_provider = providers.get("voiceprint") or create_voiceprint_provider(runtime.testing)
+        # Local knowledge base (RAG). With an empty index this provider reports enabled=False,
+        # so a checkout that never imported a corpus behaves exactly as before.
+        application.state.knowledge_provider = providers.get("rag") or create_knowledge_provider(
+            connection_factory=lambda: open_database(runtime.database_path),
+            embedder=embedding_provider.embed_queries if embedding_provider.available else None,
+            matrix_path=runtime.data_dir / KNOWLEDGE_MATRIX_FILENAME,
+            settings=KnowledgeSettings.from_env(),
+            # Both the second stage's switch and its implementation come from the same variable:
+            # IOT_KNOWLEDGE_RERANK=local builds the torch cross-encoder, =llm the endpoint one, and
+            # 0/off builds nothing. Off by default, and measured to be worth keeping off
+            # (docs/RAG_KNOWLEDGE_PLAN.md A9.7.15); /health reports what was built and why it
+            # cannot run, so asking for a reranker that is not installed is never a silent no-op.
+            reranker=create_reranker(),
+        )
         application.state.tts_provider = providers.get("tts") or create_tts_provider()
         application.state.media_store = MediaStore(runtime.data_dir / "media")
         yield
@@ -219,14 +242,43 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     def health() -> dict[str, Any]:
         admin_configured = bool(os.getenv("IOT_ADMIN_PASSWORD", "").strip())
         asr = describe_asr_backend()
+        # Voiceprint needs an optional dependency set (requirements-voiceprint.txt).
+        # Reporting it here turns "enrollment returns 503 at the worst moment" into a
+        # fact visible before anyone tries to register a speaker.
+        provider = getattr(application.state, "voiceprint_provider", None)
+        voiceprint_missing = list(provider.missing_dependencies()) if provider is not None else []
+        diagnostics = [] if admin_configured else ["admin_password_required"]
+        if voiceprint_missing:
+            diagnostics.append("voiceprint_dependencies_missing")
+        knowledge_provider = getattr(application.state, "knowledge_provider", None)
+        knowledge = knowledge_provider.stats() if knowledge_provider is not None else {
+            "enabled": False,
+            "chunks": 0,
+            "mode": "empty",
+        }
+        if knowledge.get("diagnostic"):
+            diagnostics.append(str(knowledge["diagnostic"]))
+        # Same reasoning as voiceprint: asking for the second stage and getting a silent stage 1 is
+        # the kind of thing that should be visible before anyone measures retrieval quality.
+        if knowledge.get("rerank_diagnostic"):
+            diagnostics.append(str(knowledge["rerank_diagnostic"]))
         return {
             "status": "ok",
             "service": "dialogue",
             "deepseek_configured": bool(os.getenv("DEEPSEEK_API_KEY", "").strip()),
             "admin_configured": admin_configured,
-            "diagnostics": [] if admin_configured else ["admin_password_required"],
+            "diagnostics": diagnostics,
             "asr_backend": asr["backend"],
             "asr_model": asr["model_path"],
+            "voiceprint_model_version": getattr(provider, "model_version", None),
+            "voiceprint_missing_dependencies": voiceprint_missing,
+            "knowledge_chunks": knowledge.get("chunks", 0),
+            "knowledge_mode": knowledge.get("mode", "empty"),
+            "knowledge_enabled": bool(knowledge.get("enabled")),
+            "knowledge_floor_scenario": knowledge.get("floor_scenario"),
+            "knowledge_floor_reference": knowledge.get("floor_reference"),
+            "knowledge_rerank_enabled": bool(knowledge.get("rerank_enabled")),
+            "knowledge_reranker": knowledge.get("reranker", "off"),
         }
 
     @application.get("/", include_in_schema=False)
@@ -239,6 +291,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     def _chat(req: ChatRequest, request: Request | None = None) -> ChatResponse:
         identity = conversation_identity(req.user_id, req.voiceprint_id)
         settings = memory_config
+        # Built before the connection block because the rolling summary may need it: refreshing the
+        # summary is an extra LLM request, and it only happens every few turns.
+        llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
         with db() as conn:
             if request is not None:
                 admin_auth(request, conn, write=True)
@@ -252,7 +307,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 settings=settings,
             )
             memories = recall.selected
-        llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
+            # Short-term continuity, read in the same connection: the last few turns verbatim plus a
+            # rolling summary of everything older. Without it a second turn could not refer to the
+            # first (measured: "你刚刚说了什么" was answered "我還沒開口").
+            short_term = short_term_context(conn, req.user_id, llm=llm)
         result = process_text(
             req.text,
             user_id=req.user_id,
@@ -260,8 +318,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             identity=identity,
             session_id=request.headers.get("X-Simulator-Session", "http-chat") if request is not None else "internal-chat",
             llm=llm,
-            rag_provider=providers.get("rag"),
+            rag_provider=providers.get("rag") or getattr(application.state, "knowledge_provider", None),
             memories=memories,
+            history=short_term.history,
+            summary=short_term.summary,
             request_id=str(uuid.uuid4()),
             memory_settings=settings,
         )
@@ -284,7 +344,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 )
             except Exception as exc:
                 print(f"[memory] apply_turn failed for user={req.user_id}: {exc}", flush=True)
-        return ChatResponse(conversation_id=conversation_id, user_id=req.user_id, emotion=result.emotion, reply=result.reply, model=model, latency_ms=latency_ms)
+        # getattr: a partial result object (test stand-ins) must not break the route; the real
+        # DialogueResult always carries citations.
+        cited = [str(value) for value in (getattr(result, "citations", None) or []) if value]
+        return ChatResponse(conversation_id=conversation_id, user_id=req.user_id, emotion=result.emotion, reply=result.reply, model=model, latency_ms=latency_ms, citations=cited)
 
     @application.post("/api/transcribe")
     async def transcribe(request: Request, file: UploadFile = File(...), language: str | None = Form(default=None)) -> dict[str, Any]:
@@ -847,6 +910,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                 await websocket.send_json(ProtocolEvent(device_id, session_id, turn_id, "display.state", {"state": "thinking", "emotion": "neutral", "caption": "正在理解…"}).as_dict())
                 req = ChatRequest(user_id=str(message.get("user_id") or "sim-user"), text=text, device_id=device_id, voiceprint_id=message.get("voiceprint_id"))
                 identity = conversation_identity(req.user_id, req.voiceprint_id)
+                llm = None if runtime.testing else providers.get("deepseek") or DeepSeekClient()
                 with db() as conn:
                     recall = select_for_turn(
                         conn,
@@ -856,6 +920,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         embedder=embedding_provider.embed_queries if embedding_provider.available else None,
                         settings=memory_config,
                     )
+                    short_term = short_term_context(conn, req.user_id, llm=llm)
                 try:
                     result = await asyncio.to_thread(process_text,
                         text,
@@ -864,9 +929,11 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         identity=identity,
                         session_id=session_id,
                         turn_id=turn_id,
-                        llm=None if runtime.testing else providers.get("deepseek") or DeepSeekClient(),
-                        rag_provider=providers.get("rag"),
+                        llm=llm,
+                        rag_provider=providers.get("rag") or getattr(application.state, "knowledge_provider", None),
                         memories=recall.selected,
+                        history=short_term.history,
+                        summary=short_term.summary,
                         request_id=request_id,
                         memory_settings=memory_config,
                     )

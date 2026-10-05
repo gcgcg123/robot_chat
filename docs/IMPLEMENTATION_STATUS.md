@@ -34,8 +34,18 @@
 
 ## 已驗證（可重現）
 
-- 自動化測試：`python -m pytest tests -q` → **226 passed、0 failed**（`pytest` 以
-  `requirements-dev.txt` 安裝；見下節環境事實）；`python -m compileall -q services simulator scripts` 成功。
+- 自動化測試：`python -m pytest tests -q` → **216 passed、1 skipped、0 failed**（本機 2026-10-03 實測，50.6 秒）。
+  被 skip 的是 `tests/dialogue/test_websocket.py::test_simulator_websocket_emits_turn_subtitle_and_tts_events`：
+  它只等 `tts.end`，但自 ECAPA 聲紋升級（`92e0456`）後，未登記聲紋模板的 `voiceprint_id` 会在 WS 回合被拒
+  （`turn.failed/voiceprint_required`），迴圈因此永不結束——改動前的程式碼同樣會卡住，是測試過期而非產品問題。
+  測試樹不在 Git 內（`.gitignore` 的 `tests/`），此數字是磁碟上那份的結果。
+- `python -m compileall -q services simulator` 成功；`models/manifest.json`、`configs/launcher.json` 可解析，
+  `docker-compose.yml` 可被 YAML 解析且 `WITH_VOICEPRINT` build arg 生效。
+- 全新 clone 演練（2026-10-03，隔離目錄 + 真實 `一鍵安裝並啟動.bat` 流程）：在沒有 `.env`、沒有 `.venv`、
+  PATH 上只有 Anaconda base（3.13.9）的條件下，`bootstrap-project.ps1` 自動建立 `.venv`（**208.5 MB、38 個套件、無 torch**）、
+  把依賴裝進去、由 `.env.example` 產生 `.env`、供應 simulator token 並以該 `.venv` 啟動服務；`/health` 回報
+  `asr_backend=sensevoice`、`diagnostics=["voiceprint_dependencies_missing"]`、`voiceprint_missing_dependencies=[torch, torchaudio, speechbrain]`。
+  對照組（本機 conda 環境，含 torch）診斷為空。
 - 記憶飛輪端到端（真模型、真服務，非 mock）已驗證過：自動寫入 → 無關問題不注入 →
   相關問題命中加分 → 回溯 90 天降為冷記憶 → 無關問題不喚醒 → 重新提起後冷記憶被找到並
   復活為熱記憶，以及面板手動新增的記憶確實被對話檢索到。產生這些結果的臨時驗收腳本與
@@ -73,7 +83,8 @@
   的 `conversation_identity()`：預設（`IOT_MEMORY_REQUIRE_IDENTITY=0`）回傳
   `accepted`＝「下拉框選中誰就是誰」，但當開關為 `1` 時會回傳 `unknown` 並擋掉個人記憶，
   所以它不再是無條件放行。
-- **外部 RAG（共享知識庫）**：`rag_provider` 永遠是 `None`，所以外部檢索仍未啟用（本地長期記憶已接通，見上）。`RAGFlowProvider` 的介面（`search`）與 pipeline 期望的（`enabled` + `retrieve`）不一致，接線前要先對齊。
+- **本地 RAG（共享知識庫）已接通**：`knowledge_documents` / `knowledge_chunks`（schema v6）+ `scripts/import-knowledge.py` + `services/knowledge/retriever.py`，由 `create_app` 建成 `providers["rag"]`。第一份語料（《老年人溝通技能指導手冊》）清洗後 **30 個 chunk（scenario 13 / reference 17）**，門檻 0.62 由 15 題校準集量出（命中 11/11、命中帶 0.6395–、未命中帶 –0.6016，閘門通過），引用形如 `溝通手冊 p18 › 二、老年人服務中的語言溝通`；手冊沒寫的問題會檢索到空，提示詞因此回「手冊裡沒有寫到」而不是硬答。`/health` 回報 `knowledge_chunks`/`knowledge_mode`/兩個 floor。外部 RAGFlow 適配器仍未配置（其 `search` 介面與 pipeline 期望的 `enabled` + `retrieve` 不一致）。
+- **新加入的兩本語料無法使用**：`data/RAG_data/` 下的《老年人沟通技巧》（47 MB / 251 頁）與《明明白白你的心》（20 MB / 306 頁）都是**無文字層的掃描件**（抽樣 31–32 頁皆 0 字），需要 OCR 而非 `scripts/pdf_to_md.py` 轉換；且檔名顯示來自 Anna's Archive 與 z-library，**不應進 Git**。`scripts/analyze-rag-corpus.py` 的 PDF 入口體檢會直接報出這件事。詳見 `docs/RAG_KNOWLEDGE_PLAN.md` A9.4。
 - **同意（consent）**：`services/security/consent.py` 只在測試中被呼叫，產品路徑未使用。
 - **CUDA**：本機 `ctranslate2.get_cuda_device_count() == 0` 且查無 NVIDIA 驅動，**這台機器沒有可用的 NVIDIA GPU**（文件先前提到的 RTX 2060 屬於另一台機器）。ASR 一律走 CPU。
 - MQTT/UDP broker、OTA、ESP 真機與 LCD 字幕／角色（第二階段）。
@@ -81,7 +92,7 @@
 
 ## 環境事實
 
-- 解譯器：Windows 上的 Anaconda 環境 `robot_chat`，**Python 3.11.16**（不是文件先前寫的 3.13）。
+- 解譯器：Windows 上的 Anaconda 環境 `robot_chat`，**Python 3.11.16**（不是文件先前寫的 3.13），路徑寫在被 Git 忽略的 `.env`（`IOT_PYTHON`）；`configs/launcher.json` 的 `python` 留空，所以其他機器會落到自己的 `.venv` 或 PATH。
 - 已安裝：`fastapi 0.141.1`、`uvicorn 0.53.0`、`httpx 0.28.1`、`pydantic 2.13.5`、`faster-whisper 1.2.1`、`ctranslate2 4.8.2`、`numpy 2.4.6`、`sherpa-onnx 1.13.8`、`onnxruntime 1.30.0`、`tokenizers 0.23.2`。
-- **`pytest` 已列入 `requirements-dev.txt`**（A1 已處理）；`requirements.txt` 維持只含執行期相依，並明確列出 `onnxruntime`／`tokenizers`（原本只靠 `sherpa-onnx`／`faster-whisper` 間接帶入，記憶模組不該因換掉後端就壞掉）。
+- **相依分成三份**：`requirements.txt` 只含預設路徑（約 110 MB，實測 33 個套件）；`requirements-asr-whisper.txt` 是 Whisper 後端（約 65 MB，`ctranslate2`／`av`）；`requirements-voiceprint.txt` 是聲紋（約 730 MB，`torch` 506 MB、`scipy` 113 MB、`sympy` 72 MB）。後兩者不在預設安裝內，缺件時對應功能**明確失敗**並附安裝指令（Whisper 於模型工廠、聲紋於登記端點 503，`/health` 另列 `voiceprint_dependencies_missing`），不靜默降級。`pytest` 在 `requirements-dev.txt`。
 - 模型權重不進 Git（`.gitignore` 的 `models/**`）；來源、必需檔案與 SHA-256 記於 `models/manifest.json`，下載方式見 `models/README.md`。

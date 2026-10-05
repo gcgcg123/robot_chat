@@ -1,0 +1,24 @@
+# OPTIONAL: real speaker recognition (ECAPA-TDNN through speechbrain).
+#
+#   python -m pip install -r requirements-voiceprint.txt
+#
+# Why this is not in requirements.txt: torch alone is ~500 MB, and the whole set
+# below is ~730 MB -- more than the rest of the project put together. Only
+# services/voiceprint/provider.py imports any of it (lazily, inside the ECAPA
+# provider), so the default install stays small and fast for everyone who does not
+# need biometric identification.
+#
+# Without this file the service still starts and every other feature works. Voiceprint
+# enrollment answers 503 with an actionable message, and /health reports
+# voiceprint_dependencies_missing. It deliberately does NOT fall back to
+# VOICEPRINT_PROVIDER=baseline: that provider returns [mean, rms, zero-crossing-rate],
+# which is a placeholder for the PC demo and not speaker recognition at all -- an
+# enrollment that "succeeds" with it would not identify anyone.
+#
+# torchaudio stops at 2.11 while torch continues past 2.14, and torchaudio declares no
+# dependency on torch at all, so the two version numbers are expected to differ on a
+# current install. Do not try to pin them to the same release line; pin the exact pair
+# only if you need a byte-for-byte reproducible environment.
+speechbrain>=1.0,<2
+torch>=2.2,<3
+torchaudio>=2.2,<3

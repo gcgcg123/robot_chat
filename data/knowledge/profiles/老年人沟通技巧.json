@@ -1,0 +1,19 @@
+{
+  "doc": "老年人沟通技巧",
+  "path_glob": "data/RAG_data/md/ocr/老年人沟通技巧*.md",
+  "source_label": "溝通技巧",
+  "keep_sections": [],
+  "drop_sections": ["前言", "目录", "学习目标", "问题讨论", "能力测评", "填空题", "选择题", "判断题", "练习题", "参考文献", "致谢", "答案"],
+  "kind_rules": {
+    "scenario": ["情景导入", "沟通环节", "沟通反馈", "实训演练"],
+    "reference": ["知识学习", "拓展学习"]
+  },
+  "default_kind": "scenario",
+  "content_shape": {
+    "drop_pure_exercises": true,
+    "min_chars": 60,
+    "max_chars": 600,
+    "min_heading_level": 3
+  },
+  "floor_overrides": {}
+}

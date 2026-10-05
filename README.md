@@ -16,7 +16,16 @@
 
 下載腳本會優先用專案解譯器旁的 `hf` / `huggingface-cli`，找不到就退回 `huggingface_hub` Python API；連線受限時可加 `-Endpoint https://hf-mirror.com`。
 
-Docker 使用者可執行 `powershell -ExecutionPolicy Bypass -File scripts/bootstrap-project.ps1 -Docker`。第一次會建立 `.env.docker` 範本（由 `.env.docker.example` 複製），填入本機管理員密碼及（可選）DeepSeek key 後再次執行；模型目錄需先按 `scripts/download-model.ps1` 下載（**含 `-Model embedding` 的嵌入模型**），容器會把資料寫入 Docker volume，並以唯讀方式掛載 `./models`。
+安裝時若 `data\RAG_data\` 裡有任何 `.md`，會一併匯入本地知識庫（見下方「本地知識庫」）；沒有語料就整段跳過，服務照常啟動。**語料不隨倉庫分發**，所以剛解壓的副本知識庫是空的。選用功能各自帶自己的依賴檔，不會被隱式安裝：
+
+```powershell
+.\scripts\bootstrap-project.ps1 -SkipKnowledge     # 這次不要匯入語料
+.\scripts\bootstrap-project.ps1 -SkipModelDownload # 模型已下載過，別再抓
+.\scripts\bootstrap-project.ps1 -WithVoiceprint    # 聲紋（+torch，約 730 MB）
+.\scripts\bootstrap-project.ps1 -WithRerank        # 知識庫重排器（+torch/transformers 與 1.06 GB 權重）
+```
+
+Docker 使用者可執行 `powershell -ExecutionPolicy Bypass -File scripts/bootstrap-project.ps1 -Docker`。第一次會建立 `.env.docker` 範本（由 `.env.docker.example` 複製），填入本機管理員密碼及（可選）DeepSeek key 後再次執行；模型目錄需先按 `scripts/download-model.ps1` 下載（**含 `-Model embedding` 的嵌入模型**），容器會把資料寫入 Docker volume，並以唯讀方式掛載 `./models`。映像檔不會複製 `data\`，所以 Docker 模式的知識庫與剛 clone 的副本一樣是空的。
 
 ASR 後端由 `configs/launcher.json` 的 `asr_provider` 決定（`sensevoice` 或 `whisper`），啟動器會把它寫成 `ASR_PROVIDER` 環境變數——所以不依賴未被版本控制的 `.env`。模型清單、來源與 SHA-256 見 `models/manifest.json`。
 
@@ -32,7 +41,9 @@ ASR 後端由 `configs/launcher.json` 的 `asr_provider` 決定（`sensevoice` �
 | `.env.example` | 安裝範本。第一次啟動時複製成 `.env`；改範本對已安裝的機器沒有作用 |
 | `.env.docker.example` | Docker 範本，複製成 `.env.docker`（容器路徑與主機不同） |
 
-改完 `.env` 要重啟服務（`一鍵停止.bat` → `一鍵啟動.bat`）才生效。**DeepSeek key 與 Dashboard 密碼不在 `.env`**：Windows 上以 DPAPI 加密存在 `data\secrets\`，由啟動器解密後注入環境變數（Docker 沒有 DPAPI，所以 `.env.docker` 才需要寫入明文密碼）。長期記憶的各種門檻見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md) 的環境變數表。
+改完 `.env` 要重啟服務（`一鍵停止.bat` → `一鍵啟動.bat`）才生效。**DeepSeek key 與 Dashboard 密碼不在 `.env`**：Windows 上以 DPAPI 加密存在 `data\secrets\`，由啟動器解密後注入環境變數（Docker 沒有 DPAPI，所以 `.env.docker` 才需要寫入明文密碼）。長期記憶的各種門檻見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md) 的環境變數表，知識庫的門檻見 `.env.example` 的 `IOT_KNOWLEDGE_*`。
+
+資料庫 schema 目前是 **v9**，啟動時自動遷移（純新增，不破壞既有資料）：v7 知識 chunk 的 probe、v8 句子滑窗、v9 滾動摘要表 `conversation_summaries`。
 
 ## 一鍵啟動（Windows）
 
@@ -41,6 +52,8 @@ ASR 後端由 `configs/launcher.json` 的 `asr_provider` 決定（`sensevoice` �
 ```text
 一鍵啟動.bat
 ```
+
+安裝腳本不會把依賴裝進系統 Python：若沒有指定 `IOT_PYTHON`，它會建立專案 `.venv` 並把依賴裝進那裡（需要 Python 3.10 或更新版本）。要用既有的 conda／venv 環境，就把該環境的 `python.exe` 填進 `.env` 的 `IOT_PYTHON`（見下方「手動啟動備援」），那是明確指定，腳本不會再動 `.venv`。
 
 修改程式時使用 `開發模式.bat`，結束時使用 `一鍵停止.bat`。詳細說明見 `docs/STARTUP_GUIDE.md`。
 
@@ -58,6 +71,7 @@ Copy-Item .env.example .env
 $env:DEEPSEEK_API_KEY = '<從安全密鑰管理器注入>'
 .\scripts\download-model.ps1             # ASR：SenseVoice-Small（約 228 MB）
 .\scripts\download-model.ps1 -Model embedding   # 長期記憶的嵌入模型（約 90 MB）
+python scripts\import-knowledge.py      # 可選：data\RAG_data\ 有語料時才需要
 uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 ```
 
@@ -71,9 +85,9 @@ uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
 
 ## 目前端點
 
-三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。目前聲紋仍是示範模型，PC 以所選使用者模擬對話歸屬。
+三語登記現已提供逐步朗讀、試聽、重錄及確認保存；使用者資料頁可修改語言、停用及刪除。操作與驗證限制見 [三語登記指南](docs/ENROLLMENT_GUIDE.md)。聲紋辨識（ECAPA-TDNN，192 維、CPU 推論）需要選用依賴才會啟用：沒安裝時登記會回 503 並附上安裝指令，`/health` 會列出 `voiceprint_dependencies_missing`——不會退回只能測出三個聲學數字的替身 provider，因為那樣的登記等於沒有辨識能力。PC 端仍以所選使用者模擬對話歸屬。
 
-- `GET /health`：服務狀態（含 `asr_backend` 與使用的模型路徑）
+- `GET /health`：服務狀態（含 `asr_backend`、使用的模型路徑、`knowledge_chunks`/`knowledge_mode`/`knowledge_floor_*`、`knowledge_reranker`/`knowledge_rerank_enabled` 與聲紋缺件診斷）
 - `POST /api/chat`：文字對話、情緒標籤、SQLite 紀錄
 - `POST /api/transcribe`：WAV/audio 轉寫（後端由 `ASR_PROVIDER` 決定：SenseVoice 或 faster-whisper）
 - `GET /api/conversations`：Dashboard 資料
@@ -90,6 +104,10 @@ Dashboard 目前已改為後台監控介面，不提供瀏覽器文字聊天框�
 - **串級只在「該層真的回答了這個問題」時才停**。基本資料（名字等）是跟著每一層一起注入的配角，不是「這題答完了」的訊號——否則使用者一旦報過名字，其他記憶就全部檢索不到。
 
 詳細設計、門檻依據與實測數字見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md)。多人若共用同一個 `user_id`（例如都不帶 `user_id` 而落到預設的 `sim-user`）就會共用記憶。
+
+**短期記憶（2026-10-05 新增）**：上一輪之前說過的話真的進得了提示詞——最近 **10 輪**逐字重播（`IOT_DIALOGUE_HISTORY_TURNS`，0 可關閉），更早的輪次由**滾動摘要**壓成 3～5 句放在 system prompt（`IOT_DIALOGUE_SUMMARY`，約每 6 輪更新一次，那一次多一個 LLM 請求）。上限與摘要演算法刻意保證「不留下空隙」：任何一輪不是被重播就是被摘要，不會兩邊都沒有。沒有這層之前，第二輪問「你剛剛說了什麼」只會得到「我還沒開口」（實測）。細節見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md)。
+
+**安全類發言不靠模型自願記住**：偵測到自傷／傷人意念（`自殺`、`跳樓`、`想死`、`殺了他`…）時，除了寫入 `risk_events` 供人工確認，還會**不經模型**直接落一則長期記憶（`risk:safety`／`risk:violence`，逐字引用原話所以 `approved=1`，`/health` 與 Dashboard 都看得到）。「我不想死」這種否定句不建記憶，但風險事件照記——漏掉一次披露比多一次誤報更貴。
 
 裝置模擬器：
 
@@ -109,13 +127,42 @@ python simulator\heartbeat.py --device-id verification-sim --interval 10
 
 P1 核心模組也提供 `services/tts`、`services/voiceprint`、`services/memory`、`services/dialogue/pipeline.py` 與 `services/device_gateway/mqtt_udp.py`。其中 TTS deterministic provider、聲紋 provider 與 UDP peer 是可測試 contract，並不等同真人聲紋、中文聽感或 ESP 真機通過。
 
-RAG 分成三個資料域：核准的 `shared` 共享知識、只在身份 accepted 且同意有效時可讀的 `user:<id>` 個人記憶，以及僅供 Dashboard 的 `analysis` 情緒／風險事件。小智的 LLM 工具呼叫方向與 RAGFlow `POST /api/v1/retrieval` 已以 optional adapter 保留；RAGFlow endpoint、dataset 與 token 必須自行配置，P1 預設不連外。
+RAG 分成三個資料域：核准的 `shared` 共享知識、只在身份 accepted 且同意有效時可讀的 `user:<id>` 個人記憶，以及僅供 Dashboard 的 `analysis` 情緒／風險事件。小智的 LLM 工具呼叫方向與 RAGFlow `POST /api/v1/retrieval` 已以 optional adapter 保留；RAGFlow endpoint、dataset 與 token 必須自行配置，P1 預設不連外。（這一段說的是**資料域邊界與外部 RAGFlow 的保留介面**；實際跑在服務裡的檢索是下一節的本地知識庫，兩者不衝突。）
+
+## 本地知識庫（RAG）
+
+長輩溝通手冊的節錄會依相關度注入提示詞，出處以 `citations` 回傳給前端顯示。**語料不隨倉庫分發**：`data\RAG_data\` 列在 `.gitignore`（三本書的 PDF 含掃描版／z-library 來源，處置理由見 [RAG 知識庫計畫](docs/RAG_KNOWLEDGE_PLAN.md) A9.7.7）。所以剛 clone／解壓的副本**知識庫是空的**：`citations` 會是空陣列、回答不會引用手冊，其餘功能（記憶、安全記憶、聲紋、對話）完全不受影響。
+
+| 層 | 位置 | 內容 |
+|---|---|---|
+| 語料原件 | `data\RAG_data\`（**未納入 Git**） | 3 本書的 PDF 與 MD，含 `md\ocr\` 裡兩本掃描書的 OCR 結果 |
+| 清洗檔與校準題 | `data\knowledge\`（**納入 Git**） | `profiles\`（怎麼切、哪些是純習題）、`calibration\`（每題期望頁碼＋全域負例）、`probes\` |
+| 入庫後的資料 | `IoTGroup5\emotional_robot.sqlite3` | `knowledge_documents`／`knowledge_chunks`：3 份文件、341 段，含 512 維向量與句子滑窗 |
+
+自己建一份知識庫：
+
+```powershell
+# 1. 掃描版 PDF 先 OCR（文字版 PDF／既有 MD 可跳過）
+python scripts\ocr-book.py --pdf data\RAG_data\某書.pdf --pages 84-246 --offset 12 --threads 4 --out data\RAG_data\md\ocr\某書.md
+# 2. 匯入並嵌入（冪等：以「檔案 sha256 + cleaner 版本」判斷是否需要重做）
+python scripts\import-knowledge.py
+# 3. 看語料切得對不對、量門檻與閘門
+python scripts\analyze-rag-corpus.py
+python scripts\calibrate-knowledge.py --dry-run
+```
+
+校準閘門是硬性的：**每份文件命中率 ≥80%，且命中帶與真負例帶不得重疊**。現況（2026-10-05）：3 份文件、341 段全部 `calibration_status=passed`；全域 26/28（93%），門檻 0.623（命中帶最低 0.6243 vs 真負例最高 0.6226，餘量僅 0.0017——能分開，但沒有安全邊際）。
+
+- 仍有兩題「書裡有、排不上來」：`奶奶不肯吃饭怎么劝？`、`老人做了手术一直很怕`。瓶頸在嵌入模型（bge-small-zh）的判別力，不在門檻——四次嘗試（probe 向量、LLM 重排、句子滑窗、本地 cross-encoder）都留有實測數字，見 [RAG 知識庫計畫](docs/RAG_KNOWLEDGE_PLAN.md)。
+- **重排器預設關閉**（`IOT_KNOWLEDGE_RERANK=0`）。本地 cross-encoder 實測能把召回從 26/28 提到 27/28，但它的分數帶與必須擋掉的負例重疊（正例最低 −1.67、負例最高 +1.53），等於會把「手冊沒寫」的問題答得和真命中一樣肯定，且每個子問題多花約 8 秒。要試：`bootstrap-project.ps1 -WithRerank` 之後把 `IOT_KNOWLEDGE_RERANK` 設成 `local`。
+- **回答不會唸出書名或頁碼**：注入時只給節錄內容、不給來源標籤，出處改由 `citations` 欄位交給前端顯示（實測發現模型會照抄「（《溝通手冊》p18）」），並要求整段口語回答以 2～3 句、約 60 字為上限。
+- 檢索**有**節錄但不夠回答時，提示詞要求它直說「手冊裡沒有寫到」；**完全檢索不到**時就當一般對話（`citations` 為空），不會假稱手冊寫過——實測問「怎麼給汽車換輪胎？」得到的是不引用來源的一般建議。
 
 ## 測試與驗收
 
 ```powershell
 pip install -r requirements-dev.txt      # 只多了 pytest，執行期相依仍在 requirements.txt
-python -m pytest tests -q                # 226 passed（本機實測）
+python -m pytest tests -q                # 292 passed, 1 skipped（本機實測）
 python -m compileall -q services simulator scripts
 ```
 
@@ -123,7 +170,17 @@ python -m compileall -q services simulator scripts
 
 > **倉庫不含測試**：`tests\` 與驗收報告都列在 `.gitignore`，所以**從 GitHub 下載的副本沒有這些檔案**，在那裡執行 `python -m pytest tests -q` 會得到 `file or directory not found: tests`（exit code 4）。上面的數字是在保留測試的開發工作區跑出來的。服務本身不依賴 `tests\`，下載後照樣能安裝與啟動。
 
-想驗收長期記憶的實際行為，最直接的方式是跑服務並用 Dashboard／模擬器對話：說一件事 → 隔一輪問它 → 使用資料頁的「長期記憶」區塊看層級、分數與命中次數的變化。設計、門檻依據與實測數字見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md)，PC 階段的人工步驟見 [PC 驗收](docs/PC_ACCEPTANCE.md)。
+想驗收長期記憶的實際行為，最直接的方式是跑服務並用 Dashboard／模擬器對話：說一件事 → 隔一輪問它 → 使用資料頁的「長期記憶」區塊看層級、分數與命中次數的變化。三個具體腳本：
+
+```text
+短期記憶：連續問兩輪，第二輪問「你剛剛說了什麼？」→ 應該重述上一輪自己的建議
+安全記憶：說「我不想活了，我想跳樓」→ 看 risk_events 是否 urgent、memory_chunks 是否多一列
+          key=risk:safety（approved=1）；之後說「我又想不開了」→ 該列 hits 應 +1
+知識庫　：問「什麼是首因效應？」→ citations 應出現 沟通手册 p26；問「怎麼換汽車輪胎？」
+          → citations 應為空，且回答不假稱手冊寫過
+```
+
+設計、門檻依據與實測數字見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md) 與 [RAG 知識庫計畫](docs/RAG_KNOWLEDGE_PLAN.md)，PC 階段的人工步驟見 [PC 驗收](docs/PC_ACCEPTANCE.md)。
 
 ## 文件索引
 
@@ -136,6 +193,7 @@ python -m compileall -q services simulator scripts
 | [PC 驗收](docs/PC_ACCEPTANCE.md) | PC 階段的人工驗收步驟 |
 | [完善步驟](docs/COMPLETION_PLAN.md) | 佔位模組要改成什麼、怎麼改、怎麼驗收 |
 | [RAG 設計](docs/RAG_DESIGN.md) | 資料域、權限順序與不可信參考的邊界 |
+| [RAG 知識庫計畫](docs/RAG_KNOWLEDGE_PLAN.md) | 語料清洗／切分／門檻校準、OCR 落地、重排器與四次嘗試的實測數字 |
 | [Git 流程](docs/GIT_WORKFLOW.md) | 分支、提交與上游 pin 的處理 |
 
 `docs/superpowers/` 是當時的規劃紀錄，不是現況；日期化的歷史快照見 `docs/PROJECT_PROGRESS_2026-09-14.html`。

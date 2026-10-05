@@ -20,11 +20,19 @@ data\secrets\deepseek.key
 
 從 GitHub 下載 ZIP 並解壓後，直接雙擊根目錄的 `一鍵安裝並啟動.bat`。腳本會安裝依賴、下載缺少的 Xiaozhi 參考程式、ASR 模型與長期記憶用的嵌入模型、由 `.env.example` 建立 `.env`，並在首次執行時完成密鑰、管理員密碼與 simulator token 設定；後續再次執行會直接啟動服務。這需要 Python 3.10 或更新版本、Git 和網路連線。
 
-腳本不建立虛擬環境，而是依序尋找解譯器：`IOT_PYTHON`（環境變數）→ **`.env` 裡的 `IOT_PYTHON`** → `configs/launcher.json` 的 `python` → 專案 `.venv\Scripts\python.exe` → PATH 上的 `python`。若你想用特定的 conda／venv 環境，把它的 `python.exe` 路徑填進 **`.env` 的 `IOT_PYTHON`**（`.env` 未納入 Git，單機設定放這裡才不會被之後的版本控制整理清掉）：
+腳本不把依賴裝進系統 Python。解譯器順序是：`IOT_PYTHON`（環境變數）→ **`.env` 裡的 `IOT_PYTHON`** → `configs/launcher.json` 的 `python` → 專案 `.venv\Scripts\python.exe` → PATH 上的 `python`。**前四項都不存在時，它會用 PATH 上的 Python 建立專案 `.venv`，後續依賴都裝進那裡**，所以新機器不會被污染，也不會出現「裝好了卻 import 不到 uvicorn」的情況。若你想用特定的 conda／venv 環境，把它的 `python.exe` 路徑填進 **`.env` 的 `IOT_PYTHON`**（`.env` 未納入 Git，單機設定放這裡才不會被之後的版本控制整理清掉）——那是明確指定，腳本不會再建立或覆蓋 `.venv`：
 
 ```ini
-IOT_PYTHON=D:\ProgramData\Anaconda_envs\envs\robot_chat\python.exe
+IOT_PYTHON=<你的環境>\python.exe
 ```
+
+略過自動建立（依賴就裝進 PATH 上的 Python）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap-project.ps1 -NoVenv
+```
+
+建立 `.venv` 需要 Python 3.10 或更新版本。版本太舊、或 PATH 上只有 Microsoft Store 的 `python` 別名時，腳本會直接指名是哪個解譯器、該怎麼改，而不是留下一個啟動後立刻死掉的服務。
 
 啟動前會檢查解析到的解譯器是否真的能跑這個專案（`import uvicorn`）。不能的話會直接指名解譯器與設定方式，而不是啟動一個會立刻死掉的服務——PATH 上的 `python` 常常是沒有這些依賴的另一個直譯器。`-CheckOnly` 會回報 `python_path` 與 `python_runnable`，並在 `diagnostics` 列出 `python_missing_dependencies:<路徑>`。
 
@@ -55,9 +63,19 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap-project.ps1 -Docker
 ```powershell
 .\scripts\download-model.ps1                  # ASR：SenseVoice-Small（約 228 MB）
 .\scripts\download-model.ps1 -Model embedding # 長期記憶的嵌入模型（約 90 MB）
+.\scripts\download-model.ps1 -Model voiceprint # 只在 WITH_VOICEPRINT=1 時才需要（約 85 MB）
 ```
 
 少了嵌入模型，容器仍可啟動，但長期記憶會退回字面比對（中文改述會漏）。
+
+容器映像只裝預設相依與 Whisper runtime。要連聲紋一起用（多約 730 MB）：
+
+```powershell
+$env:WITH_VOICEPRINT=1
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap-project.ps1 -Docker
+```
+
+沒帶這個 build arg 時，登記聲紋會回 503 並附上指令，`/health` 會列出 `voiceprint_dependencies_missing`。
 
 ## 平常一鍵啟動
 
@@ -168,7 +186,7 @@ data\secrets\ 加密的 DeepSeek key
 
 ### 雙擊後提示找不到虛擬環境
 
-先執行 `一鍵安裝並啟動.bat`。它會檢查虛擬環境並安裝 `requirements.txt`。
+先執行 `一鍵安裝並啟動.bat`。沒有設定 `IOT_PYTHON` 時，它會建立專案 `.venv` 並把 `requirements.txt` 裝進去；若要連聲紋一起裝，用 `-WithVoiceprint`。
 
 ### 8080 已被使用
 
@@ -203,6 +221,14 @@ Copy-Item .env.example .env
 .\scripts\download-model.ps1 -Model embedding   # 長期記憶的嵌入模型（約 90 MB）
 $env:DEEPSEEK_API_KEY = "<新 key>"
 uvicorn services.dialogue.app:app --host 127.0.0.1 --port 8080
+```
+
+選用的兩組相依不在 `requirements.txt` 裡，用到才裝：
+
+```powershell
+pip install -r requirements-asr-whisper.txt    # Whisper ASR 後端（約 65 MB）
+pip install -r requirements-voiceprint.txt     # 聲紋辨識（約 730 MB，torch 佔多數）
+.\scripts\download-model.ps1 -Model voiceprint # 聲紋模型（約 85 MB）
 ```
 
 要跑測試另外裝：`pip install -r requirements-dev.txt`（只多了 `pytest`）。

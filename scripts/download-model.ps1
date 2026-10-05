@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("sensevoice", "whisper", "embedding", "both")]
+    [ValidateSet("sensevoice", "whisper", "embedding", "voiceprint", "rerank", "both")]
     [string]$Model = "sensevoice",
     # Optional Hugging Face mirror, e.g. https://hf-mirror.com. Defaults to HF_ENDPOINT.
     [string]$Endpoint = "",
@@ -39,6 +39,28 @@ $catalog = @{
         Files     = @("onnx/model.onnx", "tokenizer.json")
         Primary   = "onnx/model.onnx"
         Runtime   = "onnxruntime (IOT_EMBEDDING_MODEL_PATH)"
+    }
+    # Speaker recognition: 85 MB of ECAPA-TDNN weights. Loaded by speechbrain, which
+    # otherwise downloads them itself at the first enrollment -- a ~17 s stall (and a
+    # hard failure with no Hugging Face access) in the middle of registering a user.
+    # Useless without requirements-voiceprint.txt, so bootstrap fetches it only when
+    # -WithVoiceprint was passed.
+    "voiceprint" = @{
+        RepoId    = "speechbrain/spkrec-ecapa-voxceleb"
+        TargetDir = "models\voiceprint\ecapa-voxceleb"
+        Files     = @("hyperparams.yaml", "embedding_model.ckpt", "mean_var_norm_emb.ckpt", "classifier.ckpt", "label_encoder.ckpt")
+        Primary   = "embedding_model.ckpt"
+        Runtime   = "speechbrain (VOICEPRINT_PROVIDER=ecapa)"
+    }
+    # Knowledge-base second stage (off unless IOT_KNOWLEDGE_RERANK=local). ~1.06 GB of PyTorch
+    # weights, and on this network only ModelScope serves them (huggingface.co times out), so this
+    # entry is fetched by download-rerank-model.py instead of huggingface_hub.
+    "rerank" = @{
+        RepoId    = "BAAI/bge-reranker-base"
+        TargetDir = "models\rerank\bge-reranker-base"
+        Files     = @("config.json", "model.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json")
+        Primary   = "model.safetensors"
+        Runtime   = "transformers + torch (IOT_KNOWLEDGE_RERANK=local; torch is optional)"
     }
 }
 
@@ -94,7 +116,14 @@ foreach ($name in $wanted) {
     $destination = if ($TargetDir -and $wanted.Count -eq 1) { $TargetDir } else { Join-Path $projectRoot $entry.TargetDir }
 
     Write-Host "`n[$name] $repository" -ForegroundColor Cyan
-    Get-ModelFiles -Repository $repository -Destination $destination -FileNames $entry.Files -Python $python
+    if ($name -eq "rerank") {
+        # Deliberately not huggingface_hub: this network cannot reach huggingface.co or
+        # hf-mirror.com, and ModelScope does not publish these weights under the same API.
+        & $python (Join-Path $PSScriptRoot "download-rerank-model.py") --repo $repository --dest $destination
+        if ($LASTEXITCODE -ne 0) { throw "Model download failed: $repository" }
+    } else {
+        Get-ModelFiles -Repository $repository -Destination $destination -FileNames $entry.Files -Python $python
+    }
 
     $missing = @($entry.Files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $destination $_)) })
     if ($missing.Count -gt 0) { throw "Downloaded $name model is incomplete: $($missing -join ', ')" }
@@ -105,6 +134,8 @@ foreach ($name in $wanted) {
     Write-Host "  $($entry.Primary) SHA-256: $hash"
     Write-Host "  runtime: $($entry.Runtime)"
     if ($name -eq "embedding") { Write-Host "  note: onnx\model.onnx is ~90 MB; without it the robot still talks, it just stops remembering." -ForegroundColor DarkGray }
+    if ($name -eq "voiceprint") { Write-Host "  note: needs requirements-voiceprint.txt; without those packages enrollment answers 503." -ForegroundColor DarkGray }
+    if ($name -eq "rerank") { Write-Host "  note: 1.06 GB; the second stage stays off until IOT_KNOWLEDGE_RERANK=local, and it measured slower than it is worth on this corpus (docs/RAG_KNOWLEDGE_PLAN.md A9.7.15)." -ForegroundColor DarkGray }
 }
 
 Write-Host "`nReview each model card and license before redistribution. Weights remain ignored by Git." -ForegroundColor DarkGray

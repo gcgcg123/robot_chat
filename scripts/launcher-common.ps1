@@ -119,6 +119,44 @@ function Quote-ProcessArgument([string]$Value) {
     return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
 }
 
+function Resolve-ProjectPythonDetail {
+    <#
+        Resolve the project interpreter and report WHERE the choice came from.
+
+        The source matters to the installer. A path that came from PATH is a guess
+        about the machine, not an operator decision, so bootstrap-project.ps1 may
+        replace it with a project-local .venv. A path that came from IOT_PYTHON --
+        environment or .env -- is explicit intent and is never replaced, which is how
+        a conda-based checkout keeps working.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $candidates = @()
+    if ($env:IOT_PYTHON) { $candidates += @{ Path = $env:IOT_PYTHON; Source = "env" } }
+    $dotenvPython = Get-DotEnvValue -ProjectRoot $ProjectRoot -Name "IOT_PYTHON"
+    if ($dotenvPython) { $candidates += @{ Path = $dotenvPython; Source = "dotenv" } }
+
+    $configPath = Join-Path $ProjectRoot "configs\launcher.json"
+    if (Test-Path -LiteralPath $configPath) {
+        $configured = [string](Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json).python
+        if (-not [string]::IsNullOrWhiteSpace($configured)) {
+            if ([System.IO.Path]::IsPathRooted($configured)) { $candidates += @{ Path = $configured; Source = "config" } }
+            else { $candidates += @{ Path = (Join-Path $ProjectRoot $configured); Source = "config" } }
+        }
+    }
+
+    $candidates += @{ Path = (Join-Path $ProjectRoot ".venv\Scripts\python.exe"); Source = "venv" }
+    foreach ($candidate in $candidates) {
+        if ($candidate.Path -and (Test-Path -LiteralPath $candidate.Path)) { return $candidate }
+    }
+
+    $command = Get-Command python -ErrorAction SilentlyContinue
+    if ($command) { return @{ Path = $command.Source; Source = "path" } }
+    return @{ Path = ""; Source = "none" }
+}
+
 function Resolve-ProjectPython {
     <#
         Locate the interpreter that runs the project, in priority order:
@@ -139,28 +177,9 @@ function Resolve-ProjectPython {
         [switch]$Quiet
     )
 
-    $candidates = @()
-    if ($env:IOT_PYTHON) { $candidates += $env:IOT_PYTHON }
-    $dotenvPython = Get-DotEnvValue -ProjectRoot $ProjectRoot -Name "IOT_PYTHON"
-    if ($dotenvPython) { $candidates += $dotenvPython }
-
-    $configPath = Join-Path $ProjectRoot "configs\launcher.json"
-    if (Test-Path -LiteralPath $configPath) {
-        $configured = [string](Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json).python
-        if (-not [string]::IsNullOrWhiteSpace($configured)) {
-            if ([System.IO.Path]::IsPathRooted($configured)) { $candidates += $configured }
-            else { $candidates += (Join-Path $ProjectRoot $configured) }
-        }
-    }
-
-    $candidates += (Join-Path $ProjectRoot ".venv\Scripts\python.exe")
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
-    }
-
-    $command = Get-Command python -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
+    $resolved = Resolve-ProjectPythonDetail -ProjectRoot $ProjectRoot
+    if ($resolved.Path) { return $resolved.Path }
     if ($Quiet) { return $null }
-    throw "No Python interpreter found. Run the first-time setup, set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
+    throw "No Python interpreter found. Install Python 3.10 or newer and double-click 一鍵安裝並啟動.bat, set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
 }
 

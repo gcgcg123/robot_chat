@@ -124,7 +124,11 @@ def _default_factory(model_path: str, device: str, compute_type: str) -> Any:
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:  # pragma: no cover - exercised by deployment
-        raise RuntimeError("faster-whisper is not installed") from exc
+        raise RuntimeError(
+            "The Whisper ASR backend is an optional extra (SenseVoice is the default). "
+            "Install it with: python -m pip install -r requirements-asr-whisper.txt, "
+            "or set ASR_PROVIDER=sensevoice."
+        ) from exc
     return WhisperModel(
         model_path,
         device=device,

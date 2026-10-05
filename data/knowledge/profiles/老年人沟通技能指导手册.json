@@ -1,0 +1,18 @@
+{
+  "doc": "老年人沟通技能指导手册",
+  "path_glob": "data/RAG_data/md/老年人沟通技能指导手册*.md",
+  "source_label": "沟通手册",
+  "keep_sections": ["知识学习", "实训演练", "案例练习", "老年人服务中的"],
+  "drop_sections": ["目录", "图书特色", "学习目标", "任务描述", "课后练习", "填空题", "选择题", "判断题"],
+  "kind_rules": {
+    "scenario": ["老年人服务中的", "实训演练", "案例练习"],
+    "reference": ["知识学习"]
+  },
+  "content_shape": {
+    "drop_pure_exercises": true,
+    "min_chars": 30,
+    "max_chars": 600,
+    "min_heading_level": 3
+  },
+  "floor_overrides": {}
+}

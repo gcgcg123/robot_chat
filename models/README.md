@@ -51,6 +51,48 @@ that case scoring falls back to lexical similarity (character bigrams), which
 still works but is noticeably weaker for Chinese paraphrases, so memory recall
 becomes hit-or-miss. Download it.
 
+## Optional: ECAPA-VoxCeleb (speaker recognition)
+
+- Repository: `speechbrain/spkrec-ecapa-voxceleb`
+- Target: `models/voiceprint/ecapa-voxceleb`
+- Runtime: `speechbrain` + `torch` (`VOICEPRINT_PROVIDER=ecapa`), CPU by default
+- Size: **~85 MB** (`embedding_model.ckpt` is 81 MB, plus the classifier and
+  normalisation checkpoints)
+- Output: a 192-dim L2-normalised embedding, compared by cosine similarity
+
+Unlike the ASR and embedding models, fetching this one is not enough to use it:
+the Python packages come from `requirements-voiceprint.txt` (~730 MB, torch
+dominates). Without them voiceprint enrollment answers 503 with the install
+command and `/health` reports `voiceprint_dependencies_missing` -- it does not
+fall back to the placeholder provider, because that provider returns three
+acoustic numbers and cannot tell speakers apart.
+
+## Knowledge-base reranker (optional, off by default)
+
+- Repository: `BAAI/bge-reranker-base` (on ModelScope)
+- Target: `models/rerank/bge-reranker-base`
+- Runtime: `transformers` + `torch` (`IOT_KNOWLEDGE_RERANK=local`), CPU only
+- Packages: `requirements-rerank.txt` (torch + transformers + safetensors, ~600 MB).
+  `-WithRerank` installs them and then downloads the weights, in that order.
+- Size: **~1.06 GB** (`model.safetensors` is 1,112,206,140 B; six files in
+  total, each with its SHA-256 in `models/manifest.json`)
+- Purpose: a cross-encoder that reads a question and a manual passage together,
+  as the second stage of knowledge retrieval
+
+It is fetched from **ModelScope**, not Hugging Face: measured on 2026-10-03,
+`huggingface.co` and `hf-mirror.com` both time out from the reference network
+while `modelscope.cn` answers. `scripts/download-rerank-model.py` does the
+download and is what `-Model rerank` calls.
+
+**Enabled or not, the retrieval path is unchanged unless you ask for it.** The
+second stage measured a real recall gain (26/28 → 27/28 questions answered) but
+its score bands overlap the ones it must reject, so a question the manual does
+not answer gets passages as confidently as a real hit -- see
+`docs/RAG_KNOWLEDGE_PLAN.md` A9.7.15 for the numbers. It also costs 8 s per
+reranked turn on a 4-core CPU. `IOT_KNOWLEDGE_RERANK=0` is the default; the
+switch, the checksums and the tests stay so a better embedding model can turn it
+on later.
+
 ## Downloading
 
 ```powershell
@@ -65,6 +107,12 @@ becomes hit-or-miss. Download it.
 
 # the memory embedding model (~90 MB, needed by whichever backend you use)
 .\scripts\download-model.ps1 -Model embedding
+
+# speaker recognition weights (~85 MB; also needs requirements-voiceprint.txt)
+.\scripts\download-model.ps1 -Model voiceprint
+
+# knowledge-base reranker (~1.06 GB, from ModelScope; also needs torch)
+.\scripts\download-model.ps1 -Model rerank
 ```
 
 The script prefers the Hugging Face `hf` / `huggingface-cli` executable next to
@@ -78,7 +126,15 @@ Behind a slow or blocked connection, point it at a mirror:
 ```
 
 `一鍵安裝並啟動.bat` runs this automatically for the configured backend plus the
-embedding model, and skips whichever download is already present.
+embedding model, and skips whichever download is already present. The 85 MB
+speaker model is fetched only with `-WithVoiceprint`, because it is useless
+without the optional packages -- and the 1.06 GB reranker only with
+`-WithRerank`, because it is off at runtime as well:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap-project.ps1 -WithVoiceprint
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap-project.ps1 -WithRerank
+```
 
 ## Verifying
 

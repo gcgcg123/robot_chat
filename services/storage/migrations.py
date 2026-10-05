@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 9
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -160,6 +160,109 @@ def _ensure_memory_columns(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
+    """Additive migration for the local knowledge base (RAG), schema version 6.
+
+    Deliberately separate tables from ``memory_chunks``: the flywheel's tiering, decay and
+    hit promotion mean nothing for static documents, its 500-candidate budget must not be
+    shared with a corpus, and deleting one document has to cascade its chunks away.
+
+    ``embedding`` is a float32 BLOB (512 x 4 = 2 KB) rather than the JSON text that
+    ``memory_chunks`` uses: measured 5.6 ms vs 0.007 ms for one 31-chunk scan, because the
+    cost is per-row ``json.loads``, not the dot product.
+    """
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_documents (
+            doc_id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            profile TEXT NOT NULL DEFAULT '',
+            sha256 TEXT NOT NULL,
+            cleaner_version INTEGER NOT NULL,
+            pages INTEGER NOT NULL DEFAULT 0,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            calibration_status TEXT NOT NULL DEFAULT 'unknown',
+            imported_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            chunk_id TEXT PRIMARY KEY,
+            doc_id TEXT NOT NULL,
+            ord INTEGER NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'reference',
+            section_path TEXT NOT NULL DEFAULT '',
+            page INTEGER,
+            source_id TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL,
+            embedding BLOB,
+            hits INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            FOREIGN KEY(doc_id) REFERENCES knowledge_documents(doc_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_doc ON knowledge_chunks(doc_id, ord);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_kind ON knowledge_chunks(kind);
+        """
+    )
+    _ensure_knowledge_probe(conn)
+    _ensure_knowledge_windows(conn)
+
+
+def _ensure_knowledge_windows(conn: sqlite3.Connection) -> None:
+    """Schema version 8: sentence-sized windows per chunk, stored as one float32 BLOB.
+
+    Measured reason: a chunk of ~334 characters embeds several topics into one vector, and this
+    project already measured what that costs (a memory scored 0.7172 against the single question
+    it answers but 0.5898 against a multi-topic message). Scoring a chunk by its *best* window
+    avoids that dilution without any new model download. ``windows`` holds n x 512 float32.
+    """
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_chunks)")}
+    if columns and "windows" not in columns:
+        conn.execute("ALTER TABLE knowledge_chunks ADD COLUMN windows BLOB")
+
+
+def _ensure_knowledge_probe(conn: sqlite3.Connection) -> None:
+    """Schema version 7: a canonical question per chunk, the way memories store a probe.
+
+    Measured reason: chunks are statements and questions are questions, and this project already
+    measured that question-vs-statement cosine barely separates (0.001) while question-vs-question
+    reaches 0.215. With 341 chunks the floors could only be told apart by a 0.0017 margin and four
+    scenario questions failed to rank at all, so each chunk now carries the question it answers and
+    *that* is what gets embedded (see docs/RAG_KNOWLEDGE_PLAN.md A9.7.9).
+    """
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_chunks)")}
+    if columns and "probe" not in columns:
+        conn.execute("ALTER TABLE knowledge_chunks ADD COLUMN probe TEXT")
+
+
+def _ensure_conversation_summary(conn: sqlite3.Connection) -> None:
+    """Schema version 9: one rolling summary per user, for turns older than the verbatim window.
+
+    Measured reason: the prompt only ever replayed the last few exchanges, so turn 11 could not
+    refer to turn 10 (and before this work, to nothing at all -- "你刚刚说了什么" was answered
+    "我還沒開口"). Raising the window alone just moves the cliff; the summary carries everything
+    older than the window in a few sentences instead.
+
+    ``covered_count`` is a *count of the user's turns*, not a timestamp: conversations can share a
+    ``created_at`` second, and every read of this table is ordered the same way
+    (``created_at, rowid``) so a count is exact where a timestamp would need a tie-break twice.
+    """
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS conversation_summaries (
+            user_id TEXT PRIMARY KEY,
+            summary TEXT NOT NULL,
+            covered_count INTEGER NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        );
+        """
+    )
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply all local migrations and return the resulting schema version."""
 
@@ -172,6 +275,8 @@ def migrate(conn: sqlite3.Connection) -> int:
     _ensure_user_status(conn)
     _ensure_memory_columns(conn)
     _make_user_nullable(conn)
+    _ensure_knowledge_schema(conn)
+    _ensure_conversation_summary(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return SCHEMA_VERSION

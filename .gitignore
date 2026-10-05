@@ -42,10 +42,22 @@ models/**
 !models/README.md
 !models/manifest.json
 
+# Third-party book corpora stay out of Git entirely: the sources are copyrighted (the first
+# manual's PDF and its extracted Markdown were tracked until 2026-10-03 and have now been
+# removed from the index too), and two of them are image-only scans from Anna's Archive /
+# z-library. The files remain on disk, so the running knowledge base is unaffected; a fresh
+# clone simply starts with an empty one and imports its own licensed corpus. Profiles and
+# calibration sets ARE versioned (data/knowledge/), because they contain rules and questions,
+# not book text. See docs/RAG_KNOWLEDGE_PLAN.md A9.7.7.
+data/RAG_data/
+
 # Local editor and OS files.
 .vs/
 .vscode/
 .idea/
+# Agent tooling permissions. These files name absolute paths on the machine that wrote
+# them, so they are machine-local by nature and must not travel with the checkout.
+.claude/
 *.swp
 Thumbs.db
 Desktop.ini
