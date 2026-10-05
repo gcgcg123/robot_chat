@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>设备详情 · 心语 IoT 情绪陪伴后台</title>
+  <link rel="stylesheet" href="/dashboard-assets/dashboard.css?v=20260915-12" />
+  <link rel="stylesheet" href="/dashboard-assets/dashboard-polish.css?v=20260915-12" />
+  <style>
+    .detail-nav{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+    .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+    .kv{display:grid;grid-template-columns:110px 1fr;gap:8px 12px;font-size:13px;margin:0}
+    .kv dt{color:var(--muted)}
+    .kv dd{margin:0;color:#1f2937;font-weight:600;word-break:break-all}
+    .cmd-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+    .cmd-row input[type=text]{flex:1;min-width:180px;padding:9px 11px;border:1px solid var(--line);border-radius:9px;font:inherit}
+    .cmd-btn{border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px 14px;font-size:13px;color:#374151}
+    .cmd-btn:hover{background:#f4f4f5}
+    .cmd-btn.primary{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+    .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d1d5db;margin-right:6px;vertical-align:middle}
+    .live-dot.on{background:#10a37f;box-shadow:0 0 0 3px rgba(16,163,127,.18)}
+    .caption-stream{max-height:280px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+    .caption-row{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.5}
+    .caption-row .who{flex:none;width:44px;color:var(--muted);font-size:11px;padding-top:2px}
+    .caption-row.user .bubble{background:#f3f6fb}
+    .caption-row.bot .bubble{background:#ecfdf5}
+    .bubble{flex:1;min-width:0;padding:8px 11px;border-radius:10px;color:#1f2937;word-break:break-word}
+    .risk-pill{display:inline-block;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700}
+    .risk-pill.none{background:#f1f3f7;color:#6b7280}
+    .risk-pill.attention{background:#fef3c7;color:#b45309}
+    .risk-pill.urgent{background:#ffe4e6;color:#be123c}
+    table td small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+    .esp-alert{display:none;margin:0 0 14px;padding:11px 14px;border-radius:12px;font-size:13px}
+    .esp-alert.show{display:block}
+    .esp-alert.bad{background:#fff1f2;border:1px solid #fecdd3;color:#9f1239}
+    .esp-alert.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+    select{padding:9px 11px;border:1px solid var(--line);border-radius:9px;font:inherit;background:#fff;max-width:100%}
+  </style>
+</head>
+<body>
+  <main class="content">
+    <div class="detail-nav">
+      <a href="/dashboard/devices" class="refresh-btn">← 设备接入</a>
+      <a href="/dashboard" class="refresh-btn">返回总览</a>
+    </div>
+
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">ESP32 设备详情</p>
+        <h1 id="device-name">载入中…</h1>
+        <p id="device-sub" class="muted"></p>
+      </div>
+      <span id="device-status" class="status-badge pending">载入中</span>
+    </header>
+
+    <div id="detail-alert" class="esp-alert"></div>
+
+    <section class="metric-grid">
+      <article class="metric-card"><span class="metric-icon mint">⌁</span><div><span>状态机</span><strong id="m-state">—</strong><small id="m-caption">—</small></div></article>
+      <article class="metric-card"><span class="metric-icon lavender">◎</span><div><span>当前用户</span><strong id="m-user">—</strong><small id="m-bound">—</small></div></article>
+      <article class="metric-card"><span class="metric-icon pink">♡</span><div><span>情绪 / 风险</span><strong id="m-emotion">—</strong><small id="m-risk">—</small></div></article>
+      <article class="metric-card"><span class="metric-icon amber">◷</span><div><span>最后心跳</span><strong id="m-seen">—</strong><small id="m-sessions">—</small></div></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div><h2><span id="live-dot" class="live-dot"></span>实时字幕流</h2><p>来自设备观测通道，仅显示文字，不保存原始音频</p></div>
+        <span class="panel-tag" id="live-tag">未连接</span>
+      </div>
+      <div id="caption-stream" class="caption-stream"><div class="empty-state">等待设备活动…</div></div>
+    </section>
+
+    <section class="detail-grid">
+      <article class="panel">
+        <div class="panel-heading"><div><h2>下发指令</h2><p>仅对在线的设备会话生效；离线时记为 offline</p></div></div>
+        <div class="cmd-row">
+          <input id="speak-text" type="text" maxlength="200" placeholder="要设备播报的文字" />
+          <button class="cmd-btn primary" type="button" data-command="speak">播报</button>
+        </div>
+        <div class="cmd-row">
+          <button class="cmd-btn" type="button" data-command="abort">打断当前播放</button>
+          <button class="cmd-btn" type="button" data-command="close">结束当前会话</button>
+        </div>
+        <div id="command-list" class="empty-state">尚无指令记录</div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h2>设备工具</h2><p>固件通过 MCP / IoT 声明的能力，语音控制设备就靠它们</p></div><span class="panel-tag" id="tools-tag">未知</span></div>
+        <div id="tool-list" class="empty-state">等待设备上报…</div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h2>设备信息</h2><p>来自设备握手与 OTA 请求</p></div></div>
+        <dl class="kv" id="device-facts"></dl>
+        <div class="panel-actions" style="margin-top:14px">
+          <select id="bind-user"></select>
+          <button class="cmd-btn primary" id="bind-btn" type="button">绑定 / 换绑</button>
+          <button class="cmd-btn" id="unbind-btn" type="button">解除绑定</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><div><h2>会话历史</h2><p>每次设备连接一条记录</p></div><button class="refresh-btn" id="refresh-btn" type="button">重新整理</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>开始时间</th><th>结束时间</th><th>轮次</th><th>板型</th><th>固件</th><th>错误</th></tr></thead>
+          <tbody id="session-rows"><tr><td colspan="6" class="empty-state">尚无会话</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>情绪陪伴机器人 · 仅供技术研究与 IoT 项目展示，不提供医疗诊断。</footer>
+  </main>
+
+  <script src="/dashboard-assets/device_detail.js?v=20260915-12"></script>
+</body>
+</html>

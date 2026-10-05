@@ -158,11 +158,139 @@ python scripts\calibrate-knowledge.py --dry-run
 - **回答不會唸出書名或頁碼**：注入時只給節錄內容、不給來源標籤，出處改由 `citations` 欄位交給前端顯示（實測發現模型會照抄「（《溝通手冊》p18）」），並要求整段口語回答以 2～3 句、約 60 字為上限。
 - 檢索**有**節錄但不夠回答時，提示詞要求它直說「手冊裡沒有寫到」；**完全檢索不到**時就當一般對話（`citations` 為空），不會假稱手冊寫過——實測問「怎麼給汽車換輪胎？」得到的是不引用來源的一般建議。
 
+## ESP32 真機接入（小智 xiaozhi 協議）
+
+專案內建一個**小智相容接入層**（`services/device_gateway/xiaozhi/`），不需要跑上游的 server：燒錄小智固件的 ESP32 直接連本服務的 `/xiaozhi/v1/`，上行 16 kHz 單聲道裸 Opus、下行 24 kHz，語音經既有 ASR → LLM → TTS 管線後回傳給設備播放。接入層是純增量，沒有改動既有對話路徑。
+
+**預設是關閉的**（`IOT_ESP_ENABLED=0`）：未設定的 checkout 不會在區域網上監聽設備。要開啟：
+
+1. `pip install pyogg opuslib_next edge-tts`，並確認 `ffmpeg` 在 PATH（或設 `IOT_FFMPEG`）。
+   Windows 上 `opuslib_next` 透過 `ctypes.util.find_library("opus")` 找 libopus，而該函式在 Windows **無條件回傳 None**，所以 `pyogg` 是必需的——它的 wheel 內含 `opus.dll`，接入層會在使用時暫時改寫 `find_library` 指向它。
+2. `IOT_TTS_PROVIDER=edge`。內建的 `windows` 與 `deterministic` provider 都只輸出**靜音**，設備會連上但不會有聲音；`GET /api/esp/status` 會以 `tts.produces_audio=false` 明說這件事，而不是讓它變成玄學問題。
+3. 開啟 Dashboard →「設備接入」頁，打開接入開關，把頁面上顯示的 **OTA 地址**填進設備（必須是區域網 IP；填 `127.0.0.1` 會讓設備連回它自己）。
+4. 設備上電後會先請求 OTA 取得 WebSocket 位址與 token，接著建立 WS 連線，出現在「已接入設備」。
+
+**身分怎麼決定**：每一輪語音都會先跟已登記的聲紋樣本比對（`IOT_ESP_VOICEPRINT=1`，預設開啟），順序是
+**聲紋命中 → 設備綁定的帳號 → `IOT_ESP_DEFAULT_USER`**。因此：
+
+- 同一個使用者可以在任意多台設備上使用——身分跟著**聲音**走，不跟著設備走；
+- **綁定不是必要條件**，只是「還沒登記聲紋／這次沒認出來」時的後備預設值；
+- 聲紋命中視為**已驗證**身分，即使 `IOT_MEMORY_REQUIRE_IDENTITY=1` 也能取用自己的長期記憶與語言設定；
+  僅靠綁定則仍只是一個「宣稱」，在该開關下不會放行個人記憶；
+- 沒有任何已登記聲紋時會直接略過比對（不做嵌入運算），所以開啟這個功能本身不增加每輪成本。
+
+比對沿用 `POST /api/voiceprint/identify` 完全相同的一組樣本、同一個 provider 版本與門檻，
+命中結果會寫進 `device_events`（`speaker_identified`）並即時推到後台的 `speaker.identified` 事件。
+聲紋的登記入口是 PC 模擬器頁的三步聲紋登記（`/simulator`）。
+
+**講完話後自動待機**：小智固件的 `OnIncomingJson` 只認 `notify/tts/stt/llm/mcp/system/alert/custom`，
+**沒有 `listen` 分支**——服務端下發 `{"type":"listen"}` 只會被印成 "Unknown message type"，不會改變狀態。
+設備回到待命（`kDeviceStateIdle`）的唯一服務端可控路徑是**關閉音訊通道**（固件收到 `OnAudioChannelClosed` 才轉 Idle）。
+因此本層的待機流程是：靜默到期 → 送出告別語（`IOT_ESP_STANDBY_NOTICE`）→ 關閉 WS → 設備回到待命、等待下一次喚醒詞。
+
+計時器有兩個，故意分開——這是過去「回答完就一直卡在聆聽」的根因：
+
+- `IOT_ESP_STANDBY_SECONDS`（預設 60）：**只**由「聽到人聲」（VAD 命中或設備送上文字）刷新。
+  設備在聆聽期間會持續推靜音 Opus 幀，若用「收到任何封包」刷新，計時器永遠不會到期；
+- `IOT_ESP_IDLE_TIMEOUT_SECONDS`（預設 300）：純連線層的死鏈看門狗，socket 完全不來訊息才觸發，
+  故意設得比固件自身的 120 秒通道逾時長，避免和固件搶著收尾。
+
+**回應速度、插話打斷與語音結束**（2026-10-04 補，設計見 [接入方案 §12](docs/ESP32_ESP_INTEGRATION_PLAN.md)）：
+舊路徑是嚴格串行的「等完整回答 → 逐句合成 → 逐句發送」，這也是「說得慢／插話打斷不了／長句說一半就斷」的根因。現在改成：
+
+- **串流回答**：LLM 走 SSE（`IOT_ESP_LLM_STREAM=1`），模型每寫出一個完整句子就立刻送去合成播放，
+  所以**第一句在模型還沒寫完時就已經在出聲**。首句不受最小長度限制——首音延遲才是使用者真正感受到的延遲。
+  非 200 或連線中斷且**尚未吐出任何內容**時自動退回非串流，已吐出的部分不會重來。
+- **兩級流水播放器**（`playback.py` 的 `TtsPlayer`）：合成執行緒與播放協程並行，**句 n+1 的合成與句 n 的播放重疊**；
+  單句合成失敗只丟那一句（錯誤推到後台 `display.state.audio_error`），不再拖垮整段回答。
+- **超長句必切**：`IOT_ESP_TTS_MAX_CHARS`（預設 48）封頂，超過就在軟斷點（逗號、頓號、括號）切開，
+  避免一個無標點的長文變成一個巨大請求、撞上 provider 逾時後整句被丟。
+- **可打斷**：固件的 `OnIncomingJson` **沒有 `listen` 分支**，所以服務端能中斷播放的**唯一**一條消息是
+  `tts state=stop`；本層在打斷時（設備送來 `abort`，或語音說「停」）一律先無條件下發它，再取消合成／播放。
+- **語音結束對話**：整句精確匹配（**上限 12 字**，刻意如此——子串規則會在「我想結束這段關係」上誤掛電話）：
+  說「停／別說了／安靜」→ 本地回一句、**不呼叫模型**、繼續聆聽；說「退下／結束／拜拜」→ 告別語 → 關閉 WS → 設備回待命。
+- **喚醒詞靜默期**：`listen detect` 後固件自播提示音，`IOT_ESP_WAKE_WORD_HOLD_SECONDS`（預設 0.8 s）
+  內忽略 VAD 斷句，避免把提示音當成「使用者說完了」。
+- **元數據不朗讀**：prompt 要求模型在結尾附 ` ```json …``` ` 或裸 JSON（emotion / risk / remember）；
+  串流切分器會在第一個標記處截斷，並把緊貼其前的半截句砍到最後一個完整終止符之後。
+- **表情 emoji 也不朗讀**：prompt 另外要求在正文**開頭**只放一個白名單 emoji（決定螢幕表情）；
+  切分器在放出第一句時把它剝掉，逐字串流、黏在首句、批次切分三種形態都剝，句中的 emoji 不動。
+
+**「為什麼還是慢」——實測帳單**（`python scripts/measure-latency.py`，可自行複測）：
+
+| 階段 | 實測 | 性質 |
+|---|---|---|
+| VAD 結束靜音判定（`IOT_VAD_SILENCE_MS`） | ~800 ms | 可調 |
+| ASR（SenseVoice / sherpa-onnx） | 178–1200 ms | 本地模型，跑 **CPU** |
+| LLM 首句可合成（串流） | 1494–2066 ms | **外部 API** |
+| TTS 首塊（edge-tts） | 791–2077 ms（波動很大） | **外部服務** |
+| ffmpeg 解碼 | 190–385 ms | 本地 |
+
+鏈路裡最大的兩塊（edge-tts 首塊、DeepSeek 首句）都在服務外部：edge-tts 從本機連微軟的首塊延遲
+會隨外網在 0.8–2.1 s 之間抖。想再快，最有效的一步是換一個國內的串流 TTS（需要憑證），
+其次是把 edge-tts 的 MP3 邊收邊餵 ffmpeg（約省 0.4–0.9 s/句）。
+
+**兩個容易踩的坑**（都會讓「看起來實作了」的功能其實從不工作）：
+
+1. **固件的工具名是點分路徑**（`self.audio_speaker.set_volume`），而模型 API 只接受 `[A-Za-z0-9_-]`，
+   直接送會拿到 **HTTP 400**。必須經過 `mcp.sanitize_tool_name()`（→ `self_audio_speaker_set_volume`）。
+2. **有工具就不能等於關掉串流**。固件必定上報工具，若把「工具迴圈」放在串流前面，串流就永遠走不到，
+   而測試（工具集為空）永遠是綠的。現在兩者共存：正文照常邊流邊合成，若某輪回了 `tool_calls`
+   就執行後再流一輪，最後一輪撤掉工具以保證以「話」收尾。
+3. **表情不能靠「使用者心情」猜**。設備的表情只在 `{"type":"llm","emotion":…}` 上（`tts` 不帶情緒），
+   官方是**讓模型在自己的回覆開頭放一個 emoji，服務端掃那個 emoji** 決定表情。
+   本層原本用三值情感分類（positive/negative/neutral）判**使用者**的心情，真機 20 輪全落在
+   `neutral`，表情從頭到尾沒動過。現在照官方：提示詞給白名單（21 個），模型開頭放一個 emoji，
+   `protocol.face_message()` 讀它；切分器會把開頭 emoji 剝掉，**不會被念出來**。
+   兩處刻意不同：模型忘了放 emoji 時退回心情判定而不是無條件 `🙂`；風險回合（`attention`/`urgent`）
+   用 😔／😱 蓋掉模型自己的選擇。見 [方案 §14](docs/ESP32_ESP_INTEGRATION_PLAN.md)。
+
+**語音控制設備本身（音量／亮度／主題）**：固件把這些能力以 **MCP** 工具的形式暴露，
+服務端必須在同一條 WebSocket 上驅動 JSON-RPC：`initialize` → `tools/list` → `tools/call`。
+本層在歡迎訊息之後自動完成握手（`services/device_gateway/xiaozhi/mcp.py`），把工具註冊給 LLM，
+並同時兼容舊的 `iot` 描述符協議（每個 method 會展開成 `<device>_<method>`）。
+`IOT_ESP_TOOLS=0` 可整體關閉。兩條路徑都能讓「把音量調到 60」真正生效：
+
+1. **規則直達**（`voicecmd.py`）：明確的設置句（有目標詞＋數值／大小聲標記）不經過模型，
+   直接呼叫設備工具並由本地生成確認語，因此**不依賴模型是否支援 function calling**；
+2. **模型工具呼叫**：其餘對話把設備工具交給 LLM，走 function calling 迴圈（上限 3 輪／30 秒），
+   最後一輪不帶工具，強制模型用口語收尾。
+
+設備詳情頁（`/dashboard/device/{id}`）會列出固件上報的工具清單，可逐一填參數手動執行；
+`tools_status.reason` 會如實回報「固件未響應握手」等情況，而不是讓它變成玄學問題。
+
+新增的設備面端點（不需後台登入，靠 `device-id` 標頭與可選的 token）：
+
+- `WS /xiaozhi/v1/`：語音／文字協議（`hello`、`listen`、`abort`、`iot`、`mcp`、`ping`）
+- `POST /xiaozhi/ota/`、`GET /xiaozhi/ota/`、`GET /xiaozhi/ota/download/{filename}`
+
+新增的後台端點（一律要 admin session，寫入另需 CSRF）：
+
+- `GET /api/esp/status`、`GET /api/esp/network`、`GET/POST /api/esp/settings`
+- `GET /api/esp/firmware`、`POST /api/esp/firmware`、`DELETE /api/esp/firmware/{filename}`
+- `GET /api/esp/ota-requests`
+- `GET /api/devices/{id}`、`GET /api/devices/{id}/sessions`、`GET/POST /api/devices/{id}/commands`
+- `POST/DELETE /api/devices/{id}/bind`、`GET /api/devices/{id}/token`
+- `WS /ws/device-observe`：後台訂閱設備即時事件（丟給慢消費者的最舊事件並計數，絕不對設備反壓）
+
+新增的後台頁面：
+
+- `/dashboard/devices`：接入開關、待機秒數與提示語、設備工具總開關、局域網地址／OTA URL 一鍵複製、待接入設備綁定、固件上傳與刪除
+- `/dashboard/device/{device_id}`：即時狀態機、字幕流、指令下發（播報／打斷／結束）、設備工具清單與手動執行、會話歷史、綁定管理
+
+`scripts/` 之外的假設備客戶端在 `simulator/esp_client.py`，可在沒有真機時驗證整條鏈路：
+
+```powershell
+python simulator\esp_client.py --ota --ws --say "我今天很難過"
+```
+
+**已知邊界**：VAD 內建實作是能量式（`IOT_VAD_PROVIDER=energy`），要求更準的斷句需另接模型；說話人身分靠聲紋（預設 provider 為 ECAPA，首次使用需下載模型；未登記聲紋時退回管理員設定的設備綁定），OAuth/配對碼流程未實作；MQTT+UDP 傳輸未實作（本層只做 WebSocket）。**語音控制設備設定需固件支援 MCP 工具**——舊版固件不上報工具時，`/api/devices/{id}` 的 `tools_status` 會回報原因，對話仍可正常進行，但「調音量」這類指令只能口頭回應。完整設計與取捨見 [ESP32 接入方案](docs/ESP32_ESP_INTEGRATION_PLAN.md)。
+
 ## 測試與驗收
 
 ```powershell
 pip install -r requirements-dev.txt      # 只多了 pytest，執行期相依仍在 requirements.txt
-python -m pytest tests -q                # 292 passed, 1 skipped（本機實測）
+python -m pytest tests -q                # 375 passed, 1 skipped（本機實測，含 ESP 網關）
 python -m compileall -q services simulator scripts
 ```
 
@@ -194,6 +322,7 @@ python -m compileall -q services simulator scripts
 | [完善步驟](docs/COMPLETION_PLAN.md) | 佔位模組要改成什麼、怎麼改、怎麼驗收 |
 | [RAG 設計](docs/RAG_DESIGN.md) | 資料域、權限順序與不可信參考的邊界 |
 | [RAG 知識庫計畫](docs/RAG_KNOWLEDGE_PLAN.md) | 語料清洗／切分／門檻校準、OCR 落地、重排器與四次嘗試的實測數字 |
+| [ESP32 接入方案](docs/ESP32_ESP_INTEGRATION_PLAN.md) | 三條路線比較、協議映射、資料模型、Dashboard 新增與風險紅線 |
 | [Git 流程](docs/GIT_WORKFLOW.md) | 分支、提交與上游 pin 的處理 |
 
 `docs/superpowers/` 是當時的規劃紀錄，不是現況；日期化的歷史快照見 `docs/PROJECT_PROGRESS_2026-09-14.html`。

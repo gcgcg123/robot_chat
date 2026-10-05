@@ -9,6 +9,34 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "launcher-common.ps1")
+
+function ConvertTo-SecureText([string]$PlainText) {
+    <#
+        Wrapping these two calls keeps the DPAPI error-handling policy in one
+        place and matches Read-DpapiSecret in launcher-common.ps1: Windows
+        PowerShell can record a non-terminating error from the DPAPI layer while
+        the conversion itself is fine, and this script runs with
+        $ErrorActionPreference = "Stop".  Relax the preference for the call so a
+        stray record cannot abort first-time setup.
+    #>
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        return ConvertTo-SecureString $PlainText -AsPlainText -Force
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+}
+
+function ConvertTo-EncryptedText([System.Security.SecureString]$Secure) {
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        return ConvertFrom-SecureString $Secure
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+}
 if (-not $SecretFile) {
     $SecretFile = Join-Path $projectRoot "data\secrets\deepseek.key"
 }
@@ -30,7 +58,7 @@ if (-not $SkipInstall) {
 $plainKey = $env:DEEPSEEK_API_KEY
 if ($plainKey) {
     if ([string]::IsNullOrWhiteSpace($plainKey)) { throw "The API key cannot be empty." }
-    $secureKey = ConvertTo-SecureString $plainKey.Trim() -AsPlainText -Force
+    $secureKey = ConvertTo-SecureText $plainKey.Trim()
 } elseif ($NonInteractive) {
     throw "NonInteractive mode requires the DEEPSEEK_API_KEY environment variable."
 } else {
@@ -48,7 +76,7 @@ try {
     $plainKey = $null
 }
 
-$encryptedKey = ConvertFrom-SecureString $secureKey
+$encryptedKey = ConvertTo-EncryptedText $secureKey
 if (-not $encryptedKey) {
     throw "The API key cannot be empty."
 }
@@ -67,7 +95,7 @@ if (-not $SkipAdmin) {
         Write-Host "Enter the Dashboard administrator password. The input will be hidden:" -ForegroundColor Cyan
         $adminSecure = Read-Host -AsSecureString
     } elseif (-not [string]::IsNullOrWhiteSpace($adminPassword)) {
-        $adminSecure = ConvertTo-SecureString $adminPassword.Trim() -AsPlainText -Force
+        $adminSecure = ConvertTo-SecureText $adminPassword.Trim()
     }
     if ($adminSecure) {
         # Read-Host -AsSecureString returns an empty SecureString when the
@@ -85,7 +113,7 @@ if (-not $SkipAdmin) {
         }
         $adminDirectory = Split-Path -Parent $AdminSecretFile
         New-Item -ItemType Directory -Force -Path $adminDirectory | Out-Null
-        $encryptedAdmin = ConvertFrom-SecureString $adminSecure
+        $encryptedAdmin = ConvertTo-EncryptedText $adminSecure
         [System.IO.File]::WriteAllText(
             $AdminSecretFile,
             $encryptedAdmin,

@@ -177,9 +177,72 @@ function Resolve-ProjectPython {
         [switch]$Quiet
     )
 
+    # Delegates to Resolve-ProjectPythonDetail: this is the flat "give me a path" entry point the
+    # launchers call, while Detail is what bootstrap needs to know *where* the answer came from (a
+    # PATH guess means it should build .venv instead of installing into it).
     $resolved = Resolve-ProjectPythonDetail -ProjectRoot $ProjectRoot
     if ($resolved.Path) { return $resolved.Path }
     if ($Quiet) { return $null }
     throw "No Python interpreter found. Install Python 3.10 or newer and double-click 一鍵安裝並啟動.bat, set IOT_PYTHON (in .env or the environment), or fill in 'python' in configs\launcher.json."
+}
+
+function Read-DpapiSecret {
+    <#
+        Read a ConvertFrom-SecureString file and return its plaintext.
+
+        Both launchers need this, and both need it to behave the same way, so it
+        lives here instead of being copied into each script.
+
+        Two traps this closes, both of which produced a baffling error message
+        that pointed at the decryption call instead of the actual cause:
+
+        1. Windows DPAPI binds the ciphertext to ONE Windows account on ONE
+           machine.  A checkout copied to another machine, or restored under a
+           different profile, holds blobs the current account can never read.
+           The provider answers "The data is invalid." / "Key not valid for use
+           in specified state.".
+
+        2. When ConvertTo-SecureString cannot unprotect the blob it writes a
+           NON-terminating error and returns $null rather than throwing.  Under
+           $ErrorActionPreference = "Stop" that record aborts the launcher with
+           no useful context, and if it does not abort, the $null travels on and
+           fails later somewhere unrelated (SecureStringToBSTR on a null).
+
+        The preference is relaxed around the call so a genuine success is never
+        killed by a stray record, and the $null result is checked explicitly so a
+        genuine failure is reported here, with the path and the fix.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Cannot read the secret '$Path': the file does not exist."
+    }
+    $encrypted = (Get-Content -Raw -LiteralPath $Path)
+    if ([string]::IsNullOrWhiteSpace($encrypted)) {
+        throw "Cannot read the secret '$Path': the file is empty. Delete it and run the first-time setup again."
+    }
+
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $secure = $null
+    try {
+        $secure = ConvertTo-SecureString $encrypted
+    } catch {
+        $secure = $null
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($null -eq $secure) {
+        throw "Cannot decrypt '$Path'. Windows DPAPI encrypted this file under a different Windows account or on a different machine, so the current account cannot read it. Delete the file and run scripts\setup-project.ps1 again to re-encrypt it here."
+    }
+
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+    }
 }
 
