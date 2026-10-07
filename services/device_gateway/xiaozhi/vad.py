@@ -70,11 +70,20 @@ class EnergyVad:
         self.reset()
 
     def reset(self) -> None:
+        self._restart_utterance()
+        self._window: deque[float] = deque(maxlen=self._window_size)
+
+    def _restart_utterance(self) -> None:
+        """Start a fresh utterance window, keeping the room's noise estimate.
+
+        ``reset`` also forgets the noise floor, which is right for a new session and wrong here: the
+        estimate is what keeps a loud room from re-triggering on its own noise.
+        """
+
         self.speaking = False
         self._voiced_ms = 0
         self._silence_ms = 0
         self._utterance_ms = 0
-        self._window: deque[float] = deque(maxlen=self._window_size)
         self._had_speech = False
 
     @property
@@ -106,8 +115,17 @@ class EnergyVad:
         if self.speaking and self._silence_ms >= self.silence_ms:
             return VadDecision(True, triggered, True, "silence", level, self._voiced_ms)
         if self._utterance_ms >= self.max_utterance_ms:
-            # Cut a monologue rather than buffering without bound.
-            return VadDecision(self.speaking, triggered, True, "max_length", level, self._voiced_ms)
+            if self.speaking or self._had_speech:
+                # Cut a monologue rather than buffering without bound.
+                return VadDecision(self.speaking, triggered, True, "max_length", level, self._voiced_ms)
+            # Twenty seconds of listening with nothing above the gate is **not an utterance**.
+            # Ending it here is what turned a silent room into a turn: measured 2026-10-06, four
+            # "utterances" of exactly 20040 ms with rms 10-35 and a "." transcript, each one sent to
+            # ASR, scored against the speaker's voiceprint and logged as ``unknown`` -- which is
+            # indistinguishable from "the voiceprint does not recognise me", and is what made a
+            # *successful* enrollment look like a failed one.
+            self._restart_utterance()
+            return VadDecision(False, False, False, "", level, 0)
         return VadDecision(self.speaking, triggered, False, "", level, self._voiced_ms)
 
     def flush(self) -> VadDecision:

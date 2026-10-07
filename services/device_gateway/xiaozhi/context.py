@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from services.device_gateway.xiaozhi.config import EspSettings
+from services.device_gateway.xiaozhi.enrollment import DeviceEnrollmentRegistry
 from services.device_gateway.xiaozhi.registry import CommandBus, LiveRegistry, ObserverHub, ToolRegistry
 
 
@@ -59,6 +60,9 @@ class GatewayContext:
     vad_status: dict = field(default_factory=dict)
     #: Live-editable view of ``EspSettings``; replaced when the dashboard saves.
     env_path: Any = None
+    #: Pending voiceprint enrollments, keyed by device; see enrollment.py in this package.
+    #: Defaulted so a hand-built context in a test needs no extra wiring.
+    enrollment: DeviceEnrollmentRegistry = field(default_factory=DeviceEnrollmentRegistry)
 
     def bind_loop(self, loop) -> None:
         self.observer.bind_loop(loop)

@@ -163,12 +163,29 @@ def save_summary(conn: Any, user_id: str, summary: str, covered: int, *, now: fl
     conn.commit()
 
 
-def short_term_context(conn: Any, user_id: str | None, *, llm: Any = None, env: dict | None = None) -> ShortTermContext:
+def short_term_context(
+    conn: Any,
+    user_id: str | None,
+    *,
+    llm: Any = None,
+    env: dict | None = None,
+    identity: Any = None,
+) -> ShortTermContext:
     """Everything the prompt needs about this conversation, refreshing the summary if due.
 
     Returns the verbatim window **and** the summary, with the guarantee that no turn falls between
     them: while a refresh is not yet due, the backlog stays in the verbatim window.
+
+    ``identity`` -- when given and the turn is *not* verified, the personal conversation is withheld.
+    The history is the user's own words, so replaying it for a voice nobody recognised is the same
+    disclosure the long-term memory gate exists to prevent.  Measured 2026-10-06: with
+    ``IOT_MEMORY_REQUIRE_IDENTITY=1`` the robot still answered 「你叫劉清琪」 to another person in
+    the room, because the owner's name was sitting in the last few turns of the *short-term* window
+    -- the one path that flag did not cover.
     """
+
+    if identity is not None and str(getattr(identity, "decision", "accepted")) != "accepted":
+        return ShortTermContext(note="identity_required")
 
     window = recent_turn_limit(env)
     if not user_id or window == 0:

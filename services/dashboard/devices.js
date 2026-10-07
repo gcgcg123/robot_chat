@@ -113,6 +113,9 @@
       ['esp-tts-max-chars', 'tts_max_chars'],
       ['esp-tts-min-chars', 'tts_min_chars'],
       ['esp-wake-word-hold', 'wake_word_hold_seconds'],
+      ['esp-voiceprint-threshold', 'voiceprint_threshold'],
+      ['esp-voiceprint-confirm-turns', 'voiceprint_confirm_turns'],
+      ['esp-voiceprint-continuity-floor', 'voiceprint_continuity_floor'],
     ]) {
       const input = $(id);
       if (!input) continue;
@@ -318,6 +321,11 @@
     ['esp-tts-max-chars', 'tts_max_chars', 'int', 12, 200, '单句字数上限需在 12–200 之间。'],
     ['esp-tts-min-chars', 'tts_min_chars', 'int', 1, 50, '非首句最小字数需在 1–50 之间。'],
     ['esp-wake-word-hold', 'wake_word_hold_seconds', 'float', 0, 10, '唤醒词静默期需在 0–10 秒之间。'],
+    /* Voiceprint identity on the board. 0 for the threshold means "inherit VOICEPRINT_THRESHOLD",
+       which is why its floor is 0 rather than a plausible cosine value. */
+    ['esp-voiceprint-threshold', 'voiceprint_threshold', 'float', 0, 0.95, '设备端声纹阈值需在 0–0.95 之间（0 = 沿用 VOICEPRINT_THRESHOLD）。'],
+    ['esp-voiceprint-confirm-turns', 'voiceprint_confirm_turns', 'int', 1, 5, '连续确认句数需在 1–5 之间。'],
+    ['esp-voiceprint-continuity-floor', 'voiceprint_continuity_floor', 'float', 0, 0.95, '连续语音相似下限需在 0–0.95 之间（0 = 只记录不拦截）。'],
   ]) {
     $(id)?.addEventListener('change', (e) => {
       const value = kind === 'int'

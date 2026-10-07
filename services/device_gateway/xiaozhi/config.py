@@ -94,6 +94,17 @@ class EspSettings:
     #: ``0`` disables the hold (an older firmware that does not chime needs none).
     wake_word_hold_seconds: float = 0.8
 
+    #: How long microphone frames are dropped after the robot stops speaking.
+    #:
+    #: The board's own voice comes back through its microphone (the firmware's AEC is not strong
+    #: enough for a speaker at desk distance), and those frames used to be treated as the user
+    #: talking. Measured 2026-10-06: a turn transcribed into a mangled version of the *robot's*
+    #: previous sentence ("我叫刘亲琪，心心疼小半天。" -- 心疼 came from the reply) with a voiceprint
+    #: score of -0.05, and an enrollment sample would have been poisoned with the robot's voice.
+    #: Frames are dropped for the whole speaking state plus this tail window; ``0`` disables only
+    #: the tail.
+    mic_mute_after_playback_ms: int = 400
+
     #: Two different timeouts, because a listening device is *not* a silent one.
     #:
     #: The ESP keeps the microphone open and streams whatever it hears (silence
@@ -123,6 +134,49 @@ class EspSettings:
     #: enrolled (or the provider is unavailable) the bound/default user is used,
     #: which is the behaviour this replaces.
     voiceprint_enabled: bool = True
+
+    #: Device-path acceptance threshold.  ``0`` defers to ``VOICEPRINT_THRESHOLD``.
+    #:
+    #: A board microphone at desk distance pulls *everyone's* score toward the middle, so the value
+    #: that works on a PC headset does not transfer.  Measured 2026-10-06 on the real board
+    #: (templates enrolled on that board, 3 sentences): the owner's own utterances scored
+    #: 0.601/0.5965/0.6453/0.578/0.6296 and 0.16-0.52 when quiet or garbled, while **another person
+    #: in the room scored 0.5965** -- inside the owner's own band.  That single number is why the
+    #: default here is "record everything and calibrate", not a guessed constant.
+    voiceprint_threshold: float = 0.0
+    voiceprint_min_margin: float = 0.0
+
+    #: How many *consecutive* utterances must match the same user before that match is acted on.
+    #:
+    #: 1 reproduces the old behaviour (one utterance is enough).  2 defeats a one-off chance match;
+    #: it does **not** defeat a voice that matches consistently, so it is not a substitute for the
+    #: threshold.  Measured 2026-10-06: the utterance that leaked the owner's name scored 0.5965 and
+    #: was preceded by a genuine 0.601 from the owner, so both matched the same user -- a streak
+    #: counter alone would not have stopped that one.
+    voiceprint_confirm_turns: int = 1
+
+    #: Cosine floor between the current utterance and the previous one in the same session.
+    #:
+    #: ``0`` only *records* the number (``continuity_score`` in the ``speaker_identified`` event);
+    #: a positive value enforces it.  The idea is that two utterances from the same mouth are close
+    #: in embedding space (measured 0.767-0.812 between consecutive enrollment sentences on this
+    #: board) much more reliably than a template match separates people -- but the impostor's
+    #: utterance was never recorded, so this stays measurement-only until the two-speaker
+    #: calibration says where the floor belongs.
+    voiceprint_continuity_floor: float = 0.0
+
+    #: Device enrollment: how many sentences, and how alike they must be.
+    #:
+    #: More than the browser wizard's three, because each extra recording at the real distance is
+    #: another chance that one template sits near where the person actually speaks.
+    #: ``enroll_min_similarity`` rejects a sample that does not look like the ones already stored --
+    #: enrollment records whatever reaches the microphone, and a second voice captured as sample 3
+    #: then matches that person at verification time.  Measured cross-sample similarity for one
+    #: person on this board: 0.767-0.812 (device, 2026-10-06) and 0.574-0.728 (browser), so the
+    #: floor is set well below those: it is a gross-contamination detector, not a quality gate.
+    enroll_samples: int = 5
+    enroll_min_similarity: float = 0.5
+    enroll_keep_previous: bool = False
 
     @property
     def frame_samples(self) -> int:
@@ -162,6 +216,7 @@ class EspSettings:
             tts_max_chars=_positive_int(env, "IOT_ESP_TTS_MAX_CHARS", 48),
             tts_min_chars=_positive_int(env, "IOT_ESP_TTS_MIN_CHARS", 6),
             wake_word_hold_seconds=_non_negative_float(env, "IOT_ESP_WAKE_WORD_HOLD_SECONDS", 0.8),
+            mic_mute_after_playback_ms=_positive_int(env, "IOT_ESP_MIC_MUTE_AFTER_PLAYBACK_MS", 400),
             standby_seconds=_positive_int(env, "IOT_ESP_STANDBY_SECONDS", 60),
             idle_timeout_seconds=_positive_int(env, "IOT_ESP_IDLE_TIMEOUT_SECONDS", 300),
             standby_notice=str(
@@ -171,6 +226,13 @@ class EspSettings:
             tool_timeout_seconds=_positive_float(env, "IOT_ESP_TOOL_TIMEOUT_SECONDS", 12.0),
             wake_words=tuple(_csv(str(env.get("IOT_ESP_WAKE_WORDS", "")))) or cls.wake_words,
             voiceprint_enabled=_flag(env, "IOT_ESP_VOICEPRINT", True),
+            voiceprint_threshold=_non_negative_float(env, "IOT_ESP_VOICEPRINT_THRESHOLD", 0.0),
+            voiceprint_min_margin=_non_negative_float(env, "IOT_ESP_VOICEPRINT_MIN_MARGIN", 0.0),
+            voiceprint_confirm_turns=_positive_int(env, "IOT_ESP_VOICEPRINT_CONFIRM_TURNS", 1),
+            voiceprint_continuity_floor=_non_negative_float(env, "IOT_ESP_VOICEPRINT_CONTINUITY_FLOOR", 0.0),
+            enroll_samples=_positive_int(env, "IOT_ESP_ENROLL_SAMPLES", 5),
+            enroll_min_similarity=_non_negative_float(env, "IOT_ESP_ENROLL_MIN_SIMILARITY", 0.5),
+            enroll_keep_previous=_flag(env, "IOT_ESP_ENROLL_KEEP_PREVIOUS", False),
         )
 
     def as_dict(self) -> dict:
@@ -200,6 +262,7 @@ class EspSettings:
             "tts_max_chars": self.tts_max_chars,
             "tts_min_chars": self.tts_min_chars,
             "wake_word_hold_seconds": self.wake_word_hold_seconds,
+            "mic_mute_after_playback_ms": self.mic_mute_after_playback_ms,
             "standby_seconds": self.standby_seconds,
             "idle_timeout_seconds": self.idle_timeout_seconds,
             "standby_notice": self.standby_notice,
@@ -207,4 +270,11 @@ class EspSettings:
             "tool_timeout_seconds": self.tool_timeout_seconds,
             "wake_words": list(self.wake_words),
             "voiceprint_enabled": self.voiceprint_enabled,
+            "voiceprint_threshold": self.voiceprint_threshold,
+            "voiceprint_min_margin": self.voiceprint_min_margin,
+            "voiceprint_confirm_turns": self.voiceprint_confirm_turns,
+            "voiceprint_continuity_floor": self.voiceprint_continuity_floor,
+            "enroll_samples": self.enroll_samples,
+            "enroll_min_similarity": self.enroll_min_similarity,
+            "enroll_keep_previous": self.enroll_keep_previous,
         }

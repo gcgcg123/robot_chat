@@ -45,6 +45,14 @@ EDITABLE_KEYS: dict[str, str] = {
     "tool_timeout_seconds": "IOT_ESP_TOOL_TIMEOUT_SECONDS",
     "wake_words": "IOT_ESP_WAKE_WORDS",
     "voiceprint_enabled": "IOT_ESP_VOICEPRINT",
+    # Identity on the board needs its own numbers: the microphone is part of the embedding, and
+    # 2026-10-06 measured another speaker at 0.5965 against the owner's own 0.578-0.6453 band.
+    "voiceprint_threshold": "IOT_ESP_VOICEPRINT_THRESHOLD",
+    "voiceprint_min_margin": "IOT_ESP_VOICEPRINT_MIN_MARGIN",
+    "voiceprint_confirm_turns": "IOT_ESP_VOICEPRINT_CONFIRM_TURNS",
+    "voiceprint_continuity_floor": "IOT_ESP_VOICEPRINT_CONTINUITY_FLOOR",
+    "enroll_samples": "IOT_ESP_ENROLL_SAMPLES",
+    "enroll_min_similarity": "IOT_ESP_ENROLL_MIN_SIMILARITY",
 }
 
 #: Reported but never written by the API.

@@ -13,6 +13,12 @@ class IdentityResult:
     second_score: float | None
     template_id: str | None
     provider: str
+    #: Who the runner-up was, not just how close they were.  A rejected match that was *almost*
+    #: another enrolled user's template is a different situation from one that matched nobody, and
+    #: only the id tells those apart after the fact (measured 2026-10-06 on real hardware: an
+    #: unverified utterance scored 0.28 against the best template -- belonging to a *different*
+    #: enrolled user than the device's binding, which no score-only log could show).
+    second_user_id: str | None = None
 
 
 def classify_scores(best: float, second: float | None, threshold: float, min_margin: float) -> str:
@@ -21,6 +27,24 @@ def classify_scores(best: float, second: float | None, threshold: float, min_mar
     if second is not None and best - second < min_margin:
         return "ambiguous"
     return "accepted"
+
+def effective_threshold(env: dict | None = None) -> float:
+    """The acceptance threshold actually in force, so callers can report it instead of guessing."""
+
+    source = os.environ if env is None else env
+    try:
+        return float(str(source.get("VOICEPRINT_THRESHOLD", "")).strip() or 0.55)
+    except ValueError:
+        return 0.55
+
+
+def effective_min_margin(env: dict | None = None) -> float:
+    source = os.environ if env is None else env
+    try:
+        return float(str(source.get("VOICEPRINT_MIN_MARGIN", "")).strip() or 0.05)
+    except ValueError:
+        return 0.05
+
 
 def identify(
     embedding: list[float],
@@ -34,8 +58,8 @@ def identify(
     The PC baseline uses cosine similarity; callers can replace the provider
     and keep this decision contract unchanged.
     """
-    threshold = threshold if threshold is not None else float(os.getenv("VOICEPRINT_THRESHOLD", "0.55"))
-    min_margin = min_margin if min_margin is not None else float(os.getenv("VOICEPRINT_MIN_MARGIN", "0.05"))
+    threshold = threshold if threshold is not None else effective_threshold()
+    min_margin = min_margin if min_margin is not None else effective_min_margin()
 
     def score(candidate):
         values = candidate.get("embedding", candidate.get("vector", []))
@@ -53,8 +77,18 @@ def identify(
         previous = best_by_user.get(user_id)
         if previous is None or candidate_score > previous[0]:
             best_by_user[user_id] = (candidate_score, template)
-    ranked = sorted(best_by_user.values(), key=lambda x: x[0], reverse=True)
+    ranked = sorted(best_by_user.items(), key=lambda item: item[1][0], reverse=True)
     if not ranked: return IdentityResult("unknown", None, -1.0, None, None, provider)
-    best, item = ranked[0]; second = ranked[1][0] if len(ranked) > 1 else None
+    best_user, (best, item) = ranked[0]
+    second_user, second_item = ranked[1] if len(ranked) > 1 else (None, None)
+    second = second_item[0] if second_item is not None else None
     decision = classify_scores(best, second, threshold, min_margin)
-    return IdentityResult(decision, item.get("user_id") if decision == "accepted" else None, best, second, item.get("template_id"), provider)
+    return IdentityResult(
+        decision,
+        item.get("user_id") if decision == "accepted" else None,
+        best,
+        second,
+        item.get("template_id"),
+        provider,
+        second_user if second_item is not None else None,
+    )

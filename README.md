@@ -107,6 +107,8 @@ Dashboard 目前已改為後台監控介面，不提供瀏覽器文字聊天框�
 
 **短期記憶（2026-10-05 新增）**：上一輪之前說過的話真的進得了提示詞——最近 **10 輪**逐字重播（`IOT_DIALOGUE_HISTORY_TURNS`，0 可關閉），更早的輪次由**滾動摘要**壓成 3～5 句放在 system prompt（`IOT_DIALOGUE_SUMMARY`，約每 6 輪更新一次，那一次多一個 LLM 請求）。上限與摘要演算法刻意保證「不留下空隙」：任何一輪不是被重播就是被摘要，不會兩邊都沒有。沒有這層之前，第二輪問「你剛剛說了什麼」只會得到「我還沒開口」（實測）。細節見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md)。
 
+**短期記憶也吃身份閘門**（2026-10-06 補上）：這一層逐字帶著使用者自己說過的話，所以當 `IOT_MEMORY_REQUIRE_IDENTITY=1` 而未核實時，**連這 10 輪與摘要都不注入**（`identity_required`）。原因是一個實測到的漏洞：長期記憶的讀與寫都已經被擋住，機器人卻還是對房間裡另一個人回答了「你叫劉清琪」——因為本人的名字就躺在短期記憶的最近幾輪裡。
+
 **安全類發言不靠模型自願記住**：偵測到自傷／傷人意念（`自殺`、`跳樓`、`想死`、`殺了他`…）時，除了寫入 `risk_events` 供人工確認，還會**不經模型**直接落一則長期記憶（`risk:safety`／`risk:violence`，逐字引用原話所以 `approved=1`，`/health` 與 Dashboard 都看得到）。「我不想死」這種否定句不建記憶，但風險事件照記——漏掉一次披露比多一次誤報更貴。
 
 裝置模擬器：
@@ -181,7 +183,101 @@ python scripts\calibrate-knowledge.py --dry-run
 
 比對沿用 `POST /api/voiceprint/identify` 完全相同的一組樣本、同一個 provider 版本與門檻，
 命中結果會寫進 `device_events`（`speaker_identified`）並即時推到後台的 `speaker.identified` 事件。
-聲紋的登記入口是 PC 模擬器頁的三步聲紋登記（`/simulator`）。
+
+**板子上「單一門檻分不開兩個人」是實測結果，不是推測**（2026-10-06）：在同一塊板子上、用這塊板子
+自己錄的模板，本人的句子拿到 **0.601 / 0.6453**，而**同一個房間裡另一個人**說「我叫什麼名字？」
+拿到 **0.5965**——那一輪被判 `accepted`，機器人就把本人的名字念了出來。兩組分數是重疊的，
+所以設備端有三個旋鈕（都可在「設備接入」頁即時改，不必重啟）：
+
+| 旋鈕 | 作用 | 專案 `.env` 目前的值 |
+|---|---|---|
+| `IOT_ESP_VOICEPRINT_THRESHOLD` | 板子專用門檻（`0` = 沿用 `VOICEPRINT_THRESHOLD`） | `0.62`：擋掉那次誤判（0.5965），代價是本人 0.60 那一類句子也會被擋 |
+| `IOT_ESP_VOICEPRINT_CONFIRM_TURNS` | 連續幾句命中**同一個人**才算核實 | `2`：擋掉偶然的一次命中；擋不住「穩定地像」的聲音，不能取代門檻 |
+| `IOT_ESP_VOICEPRINT_CONTINUITY_FLOOR` | 相鄰兩句（同一場連線）的相似度下限 | `0`：只把 `continuity_score` 記進事件，先量再決定要不要真的攔 |
+
+`speaker_identified` 事件因此同時記下 `best_score`、`second_score`、`second_user_id`、`streak`、
+`confirm_turns`、`continuity_score`、`audio_ms`、`audio_rms` 與實際生效的 `threshold`：要挑門檻就要有
+這些數字，不能猜。**校準做法**：設備詳情頁登記本人（現在是念 5 句，`IOT_ESP_ENROLL_SAMPLES`）→
+本人對設備說 5 句、另一個人也說 5 句 → 跑 `python scripts\voiceprint-report.py --samples` 讀兩組分布
+（它會列出每輪的分數、第二名是誰、連續命中數、相鄰句相似度與音量，把每個帳號的分數帶 `min/max`
+攤開，並列出每次登記每一句的收錄結果與退回原因；`--samples` 另外比對已存的登記樣本是否像同一個人）。
+兩組分得開就把門檻放中間；若像 2026-10-06 這樣重疊，**沒有單一門檻可用**，此時
+`IOT_MEMORY_REQUIRE_IDENTITY=1`（本機 `.env` 已開）是唯一能保證不洩漏的設定——代價是本人
+也常被判「未核實」而拿不到自己的記憶；要換取流暢度就把門檻降回 `0.55` 或把確認句數改回 `1`
+（兩者都是「用隱私換體驗」的交換，不是修好）。
+
+**聲紋要用「哪一支麥克風」登記**（2026-10-06 實測後的結論）：登記入口有兩個——
+
+| 入口 | 適用 | 做法 |
+|---|---|---|
+| PC 模擬器頁（`/simulator`） | 用電腦麥克風說話、或先做示範 | 三步上傳 WAV，門檻：每段語音 ≥3 秒、rms ≥150、削波 <1% |
+| **設備詳情頁「聲紋登記（用這台設備）」** | **真的要讓 ESP32 認人時用這個** | 按開始 → 設備自己念出句子 → 使用者跟著說（預設 5 句）→ 自動建立模板並綁定該設備 |
+
+為什麼要分開：**麥克風是聲紋嵌入的一部分**。實測同一個人、用瀏覽器登記的模板拿到 ESP32 上比對，
+相似度只有 **0.38–0.44**（門檻 0.55），而瀏覽器自己的樣本彼此是 0.53–0.79——所以跨裝置登記的模板在
+設備上幾乎必然 `decision=unknown`，該輪就會退回預設帳號（表現為「聲紋和記憶都不見了」）。
+
+設備端登記的細節：**樣本沒通過品質門就不佔用次數**（會用語音提示重說，例如「我沒聽到聲音，請靠近
+一點」）；**每一句還會跟已存的樣本比對**（`IOT_ESP_ENROLL_MIN_SIMILARITY`，預設 0.5），
+不像同一個人的那句會回「這一句聽起來不像同一個人」並退回重說——因為「誰在房間裡」不是音訊的屬性，
+把別人的聲音錄成第 3 句，之後那個人就會被認成這位使用者。全部通過後自動建立模板（**每段樣本各一個
+模板**，比對取最高分）、並把這台設備綁定到該使用者，所以下一輪開始就帶著他的長期記憶與短期對話；
+整個流程只認音訊、不呼叫模型，因此聽到的句子不會被當成問題回答。登記狀態會推到後台
+（`voiceprint.enrollment` / `voiceprint.enrolled` 事件）。
+
+**登記結果會留下來**（2026-10-06 補上）：待辦登記是記憶體狀態，一完成就消失，所以面板原本會跳回
+「未開始」——「登記成功」和「什麼都沒發生」長得一模一樣（實際案例：5 句樣本、5 個模板都寫進去了，
+操作者仍然回報登記失敗）。現在每次樣本收錄／退回與最後的建模板結果都會寫進 `device_events`
+（`voiceprint_enrollment` / `voiceprint_enrolled`），設備詳情頁在沒有待辦時顯示
+「上次登記 21:58:49：5/5 句 → 5 個模板，使用者 lqq」，`scripts\voiceprint-report.py` 也會列出
+每一句的收錄結果與退回原因。
+
+注意三點：**重新登記會停用該使用者舊的模板**（想同時保留 PC 那一組要開
+`IOT_ESP_ENROLL_KEEP_PREVIOUS=1`，但每多一個模板就多一次誤判機會，所以預設不開）；
+登記進行中若服務重啟，這次登記作廢（記憶體中的待辦狀態，與模擬器頁的精靈相同）；
+設備端登記比瀏覽器多錄幾句，是因為遠場模板比較鬆，多一句就多一次機會讓某個模板落在本人
+實際說話的位置上。
+
+### 多人共用一台設備（長輩＋家屬＋看護）
+
+一個帳號一份記憶，所以每個人都要有自己的帳號；聲紋是**跟著人**走的，一台設備可以服務多個人（反過來
+一個人在多台設備上也認得）。
+
+1. **先建帳號**：`/simulator` 頁的「新建使用者」，或 `POST /api/users`；`display_name` 建議寫清楚
+   （例如「女兒-小美」），後台聲紋下拉就是顯示它。
+2. **在同一台設備上各自登記**：設備詳情頁 →「聲紋登記（用這台設備）」→ 下拉**選第二個人** → 開始 →
+   他自己跟著板子念完提示的每一句（預設 5 句）。**不會影響第一個人**：模板的啟用／停用是按
+   `user_id` 作用域的（實測 A、B 各 5 個模板都保持 active）。一台設備同一時間只有一個待辦登記，
+   開始新的會取代舊的（10 分鐘逾時）。
+3. **登記完把設備換綁回主要使用者**（通常是長輩）：登記完成時會把設備綁到「剛剛登記的那個人」，而
+   綁定只是**沒人認得的声音**的兜底值——所以用「綁定 / 換綁」指回長輩，避免訪客的聲音落到剛登記的
+   家屬帳號上。
+4. **確認真的認出來了**：每輪的判定結果都在 `device_events.speaker_identified`（`decision`、
+   `best_score`、`second_score`、`second_user_id`、`streak`、`template_id`），後台設備詳情頁也會即時推
+   `speaker.identified`。判定順序是 **聲紋命中 → 設備綁定帳號 → `IOT_ESP_DEFAULT_USER`**，
+   命中還要求 `最高分 − 第二名 ≥ VOICEPRINT_MIN_MARGIN(0.05)`、分數過得了設備端門檻
+   （`IOT_ESP_VOICEPRINT_THRESHOLD`）、而且連續 `IOT_ESP_VOICEPRINT_CONFIRM_TURNS` 句都命中同一個人；
+   兩人聲音接近時會判 `unknown` 而落到綁定帳號。登記完請讓本人再對設備說兩句，確認是
+   `accepted` 且 `verified=true`、`template_id` 屬於他的模板。
+
+**多人情境下 `IOT_MEMORY_REQUIRE_IDENTITY` 要怎麼選**（下面兩欄都是實測結果，不是推測）：
+
+| 設定 | 讀：注入誰的記憶 | 寫：存進誰的記憶 |
+|---|---|---|
+| `0`（預設） | 認出來的＝本人；沒認出來的＝**綁定帳號** | 同樣按綁定帳號寫 → 未登記的人（家屬／看護／訪客）說的話會落進長輩的記憶 |
+| `1`（嚴格） | 沒認出來的人**拿不到任何個人記憶**（只用共享知識） | **也攔住**：未核實的聲音不會寫入任何人的記憶（2026-10-06 補上；在那之前只擋了讀） |
+
+`1` 的副作用要知道：**模擬器頁就無法再教它新事實，也拿不到短期記憶**（那條路是「管理者代選帳號」，
+屬未核實；改用後台手動新增記憶，或讓本人對設備說）；未核實的一輪連前 10 輪逐字重播與滾動摘要都
+拿不到（2026-10-06 補上的短期記憶閘門），所以「它剛剛不記得我上一句」在嚴格模式下是預期行為，
+不是壞掉；**危險發言也不再產生記憶列**，但它仍然會寫入 `risk_events` 供人工確認——安全網在風險
+事件那條線上，不在記憶列。還有一個 2026-10-06 才量清楚的代價：**門檻一提高，本人也會常被判未核實**
+（實測本人最好的句子 0.6453，而為了擋掉 0.5965 的誤判，門檻提到了 0.62），所以「開 `1` + 提高門檻」
+等於用本人的便利換取不洩漏；要流暢就先把門檻調回 `0.55`，或把 `IOT_ESP_VOICEPRINT_CONFIRM_TURNS`
+設回 `1`。
+
+建議：固定 1～2 個人的家庭 → 都登記聲紋、維持 `0`；會有流動人員（看護、訪客、親戚輪流來）→ **開 `1`**，
+並且把「洩漏名字」當成必須避免的事（本機 `.env` 目前的選擇）。
 
 **講完話後自動待機**：小智固件的 `OnIncomingJson` 只認 `notify/tts/stt/llm/mcp/system/alert/custom`，
 **沒有 `listen` 分支**——服務端下發 `{"type":"listen"}` 只會被印成 "Unknown message type"，不會改變狀態。
@@ -271,11 +367,12 @@ python scripts\calibrate-knowledge.py --dry-run
 - `GET /api/esp/ota-requests`
 - `GET /api/devices/{id}`、`GET /api/devices/{id}/sessions`、`GET/POST /api/devices/{id}/commands`
 - `POST/DELETE /api/devices/{id}/bind`、`GET /api/devices/{id}/token`
+- `POST/GET/DELETE /api/devices/{id}/enroll-voiceprint`：用這台設備的麥克風登記聲紋（開台/查進度/取消）
 - `WS /ws/device-observe`：後台訂閱設備即時事件（丟給慢消費者的最舊事件並計數，絕不對設備反壓）
 
 新增的後台頁面：
 
-- `/dashboard/devices`：接入開關、待機秒數與提示語、設備工具總開關、局域網地址／OTA URL 一鍵複製、待接入設備綁定、固件上傳與刪除
+- `/dashboard/devices`：接入開關、待機秒數與提示語、設備工具總開關、聲紋門檻／確認句數／連續相似下限（可即時改，不必重啟）、局域網地址／OTA URL 一鍵複製、待接入設備綁定、固件上傳與刪除
 - `/dashboard/device/{device_id}`：即時狀態機、字幕流、指令下發（播報／打斷／結束）、設備工具清單與手動執行、會話歷史、綁定管理
 
 `scripts/` 之外的假設備客戶端在 `simulator/esp_client.py`，可在沒有真機時驗證整條鏈路：
@@ -284,13 +381,15 @@ python scripts\calibrate-knowledge.py --dry-run
 python simulator\esp_client.py --ota --ws --say "我今天很難過"
 ```
 
-**已知邊界**：VAD 內建實作是能量式（`IOT_VAD_PROVIDER=energy`），要求更準的斷句需另接模型；說話人身分靠聲紋（預設 provider 為 ECAPA，首次使用需下載模型；未登記聲紋時退回管理員設定的設備綁定），OAuth/配對碼流程未實作；MQTT+UDP 傳輸未實作（本層只做 WebSocket）。**語音控制設備設定需固件支援 MCP 工具**——舊版固件不上報工具時，`/api/devices/{id}` 的 `tools_status` 會回報原因，對話仍可正常進行，但「調音量」這類指令只能口頭回應。完整設計與取捨見 [ESP32 接入方案](docs/ESP32_ESP_INTEGRATION_PLAN.md)。
+**已知邊界**：VAD 內建實作是能量式（`IOT_VAD_PROVIDER=energy`），要求更準的斷句需另接模型；**沒人說話的
+靜音不會再被當成一輪**（2026-10-06 修：連續 20 秒的靜音緩衝曾被 VAD 的長度上限切成「一句」送進 ASR，
+轉寫成「.」、拿去比聲紋得到 0.26–0.48，看起來就像「聲紋認不出我」，其實是「沒有人在說話」）；說話人身分靠聲紋（預設 provider 為 ECAPA，首次使用需下載模型；未登記聲紋時退回管理員設定的設備綁定）——**而且遠場分數會重疊**：2026-10-06 實測本人 0.601/0.6453、同房間另一人 0.5965，所以設備端門檻只能「保守優先」而無法同時保證本人一定通過，想從根本改善需要換更強的中文說話人模型（ERes2Net 之類）；OAuth/配對碼流程未實作；MQTT+UDP 傳輸未實作（本層只做 WebSocket）。**語音控制設備設定需固件支援 MCP 工具**——舊版固件不上報工具時，`/api/devices/{id}` 的 `tools_status` 會回報原因，對話仍可正常進行，但「調音量」這類指令只能口頭回應。完整設計與取捨見 [ESP32 接入方案](docs/ESP32_ESP_INTEGRATION_PLAN.md)。
 
 ## 測試與驗收
 
 ```powershell
 pip install -r requirements-dev.txt      # 只多了 pytest，執行期相依仍在 requirements.txt
-python -m pytest tests -q                # 375 passed, 1 skipped（本機實測，含 ESP 網關）
+python -m pytest tests -q                # 412 passed, 1 skipped（本機實測，含 ESP 網關）
 python -m compileall -q services simulator scripts
 ```
 
@@ -306,6 +405,11 @@ python -m compileall -q services simulator scripts
           key=risk:safety（approved=1）；之後說「我又想不開了」→ 該列 hits 應 +1
 知識庫　：問「什麼是首因效應？」→ citations 應出現 沟通手册 p26；問「怎麼換汽車輪胎？」
           → citations 應為空，且回答不假稱手冊寫過
+說話人　：設備詳情頁登記本人（預設 5 句）→ 本人連說 2 句、另一人說 1 句 →
+          python scripts\voiceprint-report.py --samples
+          預期：本人那兩輪 best_score/streak 上升且 verified=true，另一人那輪 verified=false
+          （或 decision=unknown）；分數若與本人重疊，就照上面的「校準做法」挑門檻，
+          挑不出來就維持 IOT_MEMORY_REQUIRE_IDENTITY=1
 ```
 
 設計、門檻依據與實測數字見 [長期記憶飛輪](docs/MEMORY_FLYWHEEL.md) 與 [RAG 知識庫計畫](docs/RAG_KNOWLEDGE_PLAN.md)，PC 階段的人工步驟見 [PC 驗收](docs/PC_ACCEPTANCE.md)。

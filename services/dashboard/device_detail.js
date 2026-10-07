@@ -260,6 +260,7 @@
       const payload = await call('/api/users').catch(() => ({ items: [] }));
       users = (payload && payload.items) || [];
       $('bind-user').innerHTML = users.map((u) => `<option value="${esc(u.user_id)}"${device.bound_user_id === u.user_id ? ' selected' : ''}>${esc(u.display_name || u.user_id)}</option>`).join('') || '<option value="">无可用用户</option>';
+      $('enroll-user').innerHTML = users.map((u) => `<option value="${esc(u.user_id)}"${device.bound_user_id === u.user_id ? ' selected' : ''}>${esc(u.display_name || u.user_id)}</option>`).join('') || '<option value="">无可用用户</option>';
     }
   }
 
@@ -324,10 +325,81 @@
 
   $('refresh-btn')?.addEventListener('click', load);
 
+  // ------------------------------------------------- voiceprint enrollment (this device)
+  //
+  // The samples must come from the device's own microphone: browser-enrolled templates scored
+  // 0.38-0.44 against the same person on an ESP32 (threshold 0.55), because the microphone is part
+  // of the embedding. The board reads each sentence out loud itself, so the operator only has to
+  // press start and watch this panel.
+
+  function renderEnrollment(state) {
+    const prompts = (state && state.prompts) || [];
+    const collected = (state && state.sample_count) || 0;
+    // How many sentences this enrollment needs comes from the server (IOT_ESP_ENROLL_SAMPLES):
+    // the board's microphone produces looser templates than a PC headset, so it asks for more.
+    const required = (state && state.required_samples) || 3;
+    const last = (state && state.last) || null;
+    $('enroll-tag').textContent = !state || state.state === 'idle'
+      ? '未开始'
+      : (state.state === 'completed' ? '已完成' : `${collected}/${required}`);
+    $('enroll-prompts').innerHTML = prompts.length
+      ? prompts.map((text, index) => `<li${index < collected ? ' style="opacity:.45;text-decoration:line-through"' : ''}>${esc(text)}</li>`).join('')
+      : '选择使用者后开始，设备会自己念出要说的句子';
+    const notes = [];
+    if (state && state.state === 'collecting') notes.push(`已收 ${collected}/${required} 句，请让使用者对着设备说第 ${state.step || 1} 句。`);
+    if (state && state.last_reason) notes.push(`上一句没通过：${esc(state.last_reason)}（设备会提示重说，不会占用次数）`);
+    if (state && state.state === 'completed') notes.push('模板已建立，设备已绑定到这位使用者。');
+    if (state && state.connected === false) notes.push('设备当前不在线——先唤醒它再说句子。');
+    // No pending item means the panel used to say nothing at all, which made a finished enrollment
+    // look like one that never started. Show what actually happened instead.
+    if (last && (!state || state.state === 'idle')) {
+      const when = last.at ? new Date(last.at * 1000).toLocaleTimeString() : '';
+      notes.push(last.completed
+        ? `上次登记 ${when}：${last.samples}/${last.required_samples || last.samples} 句 → ${last.templates} 个模板，使用者 ${esc(last.user_id)}${last.ok ? '' : `（失败：${esc(last.reason || '未知原因')}）`}`
+        : `上次登记 ${when}：第 ${last.samples} 句${last.ok ? '已收录' : `被退回（${esc(last.reason || '未知原因')}）`}。`);
+      if (last.completed && last.ok) notes.push('若之后仍然认不出本人，请看「声纹识别」设置里的阈值与确认句数，或重新登记一次。');
+    }
+    $('enroll-status').textContent = notes.length ? notes.join(' ') : '等待设备说话…';
+  }
+
+  async function refreshEnrollment() {
+    try {
+      renderEnrollment(await call(`/api/devices/${encodeURIComponent(deviceId)}/enroll-voiceprint`));
+    } catch (err) {
+      $('enroll-status').textContent = `读取登记状态失败：${err.message}`;
+    }
+  }
+
+  $('enroll-btn')?.addEventListener('click', async () => {
+    const userId = $('enroll-user').value;
+    if (!userId) { alertBox('没有可登记的使用者。', 'bad'); return; }
+    if (!window.confirm('开始后请让使用者对着设备念完设备提示的每一句（每句至少 3 秒，默认 5 句）。这会替换该使用者现有的声纹模板，继续吗？')) return;
+    try {
+      renderEnrollment(await call(`/api/devices/${encodeURIComponent(deviceId)}/enroll-voiceprint`, {
+        method: 'POST', body: JSON.stringify({ user_id: userId }),
+      }));
+      alertBox('已开始。设备会念出第一句，让使用者跟着说。', 'ok');
+    } catch (err) {
+      alertBox(`开始失败：${err.message}`, 'bad');
+    }
+  });
+
+  $('enroll-cancel-btn')?.addEventListener('click', async () => {
+    try {
+      await call(`/api/devices/${encodeURIComponent(deviceId)}/enroll-voiceprint`, { method: 'DELETE' });
+      await refreshEnrollment();
+      alertBox('已取消登记。', 'ok');
+    } catch (err) {
+      alertBox(`取消失败：${err.message}`, 'bad');
+    }
+  });
+
   (async () => {
     if (!await bootstrapSession()) return;
     await load();
+    await refreshEnrollment();
     connectObserver();
     setInterval(load, 10000);
+    setInterval(refreshEnrollment, 3000);
   })();
 })();

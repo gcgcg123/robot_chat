@@ -31,7 +31,6 @@ from services.dashboard.read_model import (
 )
 from services.audio.factory import create_asr_service, describe_asr_backend
 from services.audio.normalize import normalize_audio
-from services.audio.quality import check_quality
 from services.enrollment.languages import Language, LANGUAGES
 from services.audio.worker import AsrWorker, QueueFullError
 from services.device_gateway.events import normalize_heartbeat
@@ -51,7 +50,8 @@ from services.users.schemas import DeleteConfirmation, ProfileInput, ProfilePatc
 from services.analysis.risk import analyze_local, merge_risk
 from services.voiceprint.matcher import identify as identify_voiceprint
 from services.voiceprint.provider import create_voiceprint_provider
-from services.voiceprint.storage import seal, open_sealed
+from services.voiceprint import enrollment as voiceprint_enrollment
+from services.voiceprint.storage import open_sealed
 from services.enrollment.service import EnrollmentService
 from services.memory.candidates import valid_slot_key
 from services.memory.embeddings import create_embedding_provider
@@ -66,6 +66,7 @@ from services.tts.config import create_tts_provider
 from services.tts.media_store import MediaStore
 from services.device_gateway.xiaozhi.config import EspSettings
 from services.device_gateway.xiaozhi.context import GatewayContext
+from services.device_gateway.xiaozhi.enrollment import DeviceEnrollmentRegistry
 from services.device_gateway.xiaozhi.opus_codec import opus_status
 from services.device_gateway.xiaozhi.registry import CommandBus, LiveRegistry, ObserverHub, ToolRegistry
 from services.device_gateway.xiaozhi.router import mount_xiaozhi_routes
@@ -202,6 +203,16 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         # through -- one provider version, one template set, one threshold.
         esp_ctx.voiceprint_provider = application.state.voiceprint_provider
         esp_ctx.bind_loop(asyncio.get_running_loop())
+        # Preload the embedding model at startup instead of on the first turn: the
+        # ONNX graph + tokenizer take on the order of a second to load on CPU, which
+        # otherwise lands as a visible hitch on the first memory/knowledge retrieval.
+        # A missing or corrupt model must not stop startup -- the embedder already
+        # reports available=False and callers fall back to lexical scoring.
+        if embedding_provider.available:
+            try:
+                await asyncio.to_thread(embedding_provider.embed_documents, ["__warmup__"])
+            except Exception:
+                pass
         yield
         application.state.asr_worker.shutdown()
 
@@ -258,8 +269,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
     # Mounted additively: every ESP route lives in services/device_gateway/xiaozhi
     # and none of them shadows an existing route. Before the first request the
     # lifespan above fills in the worker/provider/registry instances.
+    esp_settings = EspSettings.from_env()
     esp_ctx = GatewayContext(
-        settings=EspSettings.from_env(),
+        settings=esp_settings,
         runtime=runtime,
         providers=providers,
         db=db,
@@ -272,6 +284,9 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         live=LiveRegistry(),
         tools=ToolRegistry(),
         commands=CommandBus(),
+        # The device asks for IOT_ESP_ENROLL_SAMPLES recordings, which is deliberately more than
+        # the browser wizard's three: see EspSettings.enroll_samples.
+        enrollment=DeviceEnrollmentRegistry(required_samples=esp_settings.enroll_samples),
         admin_auth=admin_auth,
         record_audit=record_audit,
         save_conversation=save_conversation,
@@ -357,8 +372,10 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             memories = recall.selected
             # Short-term continuity, read in the same connection: the last few turns verbatim plus a
             # rolling summary of everything older. Without it a second turn could not refer to the
-            # first (measured: "你刚刚说了什么" was answered "我還沒開口").
-            short_term = short_term_context(conn, req.user_id, llm=llm)
+            # first (measured: "你刚刚说了什么" was answered "我還沒開口"). Like the memories, it is
+            # withheld for an unverified voice -- this history is exactly where the owner's name sat
+            # when another person asked for it on 2026-10-06.
+            short_term = short_term_context(conn, req.user_id, llm=llm, identity=identity)
         result = process_text(
             req.text,
             user_id=req.user_id,
@@ -753,7 +770,11 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             saved_steps = [r["step"] for r in conn.execute("SELECT step FROM voiceprint_samples WHERE user_id=? AND model_version=? ORDER BY step", (payload.user_id, model_version)).fetchall()]
         item = application.state.enrollment_service.start(payload.user_id, payload.language)
         application.state.enrollment_service.transition(item.enrollment_id, "collecting_samples")
-        return {"enrollment_id": item.enrollment_id, "user_id": item.user_id, "state": "collecting_samples", "required_samples": 3, "expires_at": item.expires_at, 'language': item.language, 'prompts': LANGUAGES[item.language]['prompts'], "sample_count": len(saved_steps), "saved_steps": saved_steps}
+        # The browser wizard is a three-step flow (its own microphone, one person at one keyboard),
+        # so it gets exactly the first three sentences: the prompt table is longer than three now
+        # because the *device* path asks for more (IOT_ESP_ENROLL_SAMPLES).
+        browser_steps = voiceprint_enrollment.REQUIRED_SAMPLES
+        return {"enrollment_id": item.enrollment_id, "user_id": item.user_id, "state": "collecting_samples", "required_samples": browser_steps, "expires_at": item.expires_at, 'language': item.language, 'prompts': LANGUAGES[item.language]['prompts'][:browser_steps], "sample_count": len(saved_steps), "saved_steps": saved_steps}
 
     @application.post("/api/enrollments/{enrollment_id}/samples")
     async def enrollment_sample(enrollment_id: str, request: Request, file: UploadFile = File(...), step: int | None = Form(default=None)):
@@ -768,36 +789,33 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
         try:
             application.state.enrollment_service.collecting(enrollment_id)
             normalized = normalize_audio(sample, file.content_type or '')
-            quality = check_quality(normalized, enrollment=True)
             if normalized.duration_ms > 20_000:
                 raise ValueError('audio_too_long')
-            if not quality['accepted']: raise ValueError(quality['reason'])
             provider = application.state.voiceprint_provider
-            embedding = provider.embed(normalized.pcm16)
+            if step is not None and step not in voiceprint_enrollment.STEPS:
+                raise ValueError("invalid_sample_step")
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        sample_id, now = str(uuid.uuid4()), time.time()
         with db() as conn:
             user = get_user(conn, item.user_id)
             if not user: raise HTTPException(status_code=404, detail='user_not_found')
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
-            saved_steps = {row[0] for row in conn.execute("SELECT step FROM voiceprint_samples WHERE user_id=? AND model_version=?", (item.user_id, provider.model_version))}
-            next_step = next((value for value in (1, 2, 3) if value not in saved_steps), None)
-            if step is None:
-                step = next_step
-            if step is None or (step not in saved_steps and step != next_step):
-                raise HTTPException(status_code=422, detail="invalid_sample_step")
-            conn.execute(
-                "INSERT INTO voiceprint_samples(sample_id,user_id,step,embedding_json,quality_json,model_version,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,step) DO UPDATE SET sample_id=excluded.sample_id, embedding_json=excluded.embedding_json, quality_json=excluded.quality_json, model_version=excluded.model_version, updated_at=excluded.updated_at",
-                (sample_id, item.user_id, step, seal(embedding), json.dumps(quality, ensure_ascii=False), provider.model_version, now, now),
-            )
+            try:
+                # One implementation for both enrollment channels: the browser wizard and an
+                # ESP32 enrolling through its own microphone (services/voiceprint/enrollment.py).
+                taken = voiceprint_enrollment.take_sample(
+                    conn, user_id=item.user_id, provider=provider, audio=normalized, step=step
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             conn.commit()
-            sample_count = conn.execute("SELECT COUNT(*) FROM voiceprint_samples WHERE user_id=? AND model_version=?", (item.user_id, provider.model_version)).fetchone()[0]
+        quality = dict(taken["quality"])
         quality.update({'duration_ms': normalized.duration_ms, 'status': 'accepted'})
-        return {"enrollment_id": enrollment_id, "state": item.state, "sample_count": sample_count, "step": step, "quality": quality}
+        return {"enrollment_id": enrollment_id, "state": item.state, "sample_count": taken["sample_count"], "step": taken["step"], "quality": quality}
 
     @application.post("/api/enrollments/{enrollment_id}/complete")
     def complete_enrollment(enrollment_id: str, request: Request):
@@ -808,42 +826,34 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
             with db() as conn:
                 if not get_user(conn, item.user_id): raise HTTPException(status_code=404, detail='user_not_found')
             return item.result
-        with db() as conn:
-            user = get_user(conn, item.user_id)
-            if not user: raise HTTPException(status_code=404, detail='user_not_found')
-            if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
-            model_version = application.state.voiceprint_provider.model_version
-            rows = conn.execute("SELECT step, embedding_json FROM voiceprint_samples WHERE user_id=? AND model_version=? ORDER BY step", (item.user_id, model_version)).fetchall()
-        if len(rows) < 3: raise HTTPException(status_code=422, detail="insufficient_samples")
         try:
             application.state.enrollment_service.collecting(enrollment_id)
-            vectors = [open_sealed(row["embedding_json"]) for row in rows]
-            embedding = [sum(values) / len(values) for values in zip(*vectors)]
-            norm = sum(value * value for value in embedding) ** 0.5
-            if norm <= 1e-12:
-                raise ValueError("empty_embedding")
-            embedding = [value / norm for value in embedding]
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except ValueError as exc:
+        except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        now = time.time()
-        template_ids = [str(uuid.uuid4()) for _ in vectors]
         with db() as conn:
             user = get_user(conn, item.user_id)
             if not user: raise HTTPException(status_code=404, detail='user_not_found')
             if user['status'] != 'active': raise HTTPException(status_code=409, detail='user_disabled')
-            conn.execute("UPDATE voiceprint_templates SET active=0 WHERE user_id=?", (item.user_id,))
-            conn.execute('UPDATE users SET enrollment_language=? WHERE user_id=?', (item.language, item.user_id))
-            provider = application.state.voiceprint_provider
-            for template_id, vector in zip(template_ids, vectors):
-                conn.execute(
-                    "INSERT INTO voiceprint_templates(template_id,user_id,embedding_json,model_version,active,created_at) VALUES(?,?,?,?,?,?)",
-                    (template_id, item.user_id, seal(vector), provider.model_version, 1, now),
+            try:
+                result = voiceprint_enrollment.build_templates(
+                    conn, user_id=item.user_id, provider=application.state.voiceprint_provider, language=item.language
                 )
-            conn.commit(); record_audit(conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id, metadata={"samples": len(rows), "template_id": template_ids[0]})
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            record_audit(
+                conn, actor, "voiceprint_enrollment", target_type="user", target_id=item.user_id,
+                metadata={"samples": result["samples"], "template_id": result["template_id"]},
+            )
         item.state = "completed"
-        item.result = {"enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state, "decision": "accepted", "template_id": template_ids[0], "template_ids": template_ids, "model_version": provider.model_version}
+        item.result = {
+            "enrollment_id": enrollment_id, "user_id": item.user_id, "state": item.state,
+            "decision": "accepted", "template_id": result["template_id"],
+            "template_ids": result["template_ids"], "model_version": result["model_version"],
+        }
         return item.result
 
     @application.post("/api/voiceprint/identify")
@@ -968,7 +978,7 @@ def create_app(settings: RuntimeSettings | None = None, providers: dict | None =
                         embedder=embedding_provider.embed_queries if embedding_provider.available else None,
                         settings=memory_config,
                     )
-                    short_term = short_term_context(conn, req.user_id, llm=llm)
+                    short_term = short_term_context(conn, req.user_id, llm=llm, identity=identity)
                 try:
                     result = await asyncio.to_thread(process_text,
                         text,

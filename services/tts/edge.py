@@ -96,6 +96,9 @@ class EdgeTtsProvider(TtsProvider):
     """Online neural TTS (edge-tts) with local MP3 -> PCM16 decoding."""
 
     name = "edge"
+    # Declared, not inferred: /api/esp/status reports this, and the base class default would say
+    # "audible" for anything -- being explicit here is what lets a *silent* provider be honest.
+    produces_audio = True
 
     def __init__(
         self,

@@ -1,4 +1,4 @@
-"""Whose memories a dialogue turn is allowed to reach.
+"""Whose memories a dialogue turn is allowed to reach -- and to write.
 
 The PC simulator lets the operator pick a user from a dropdown, and
 ``POST /api/chat`` takes ``user_id`` straight from the request body.  That is a
@@ -9,6 +9,14 @@ With ``IOT_MEMORY_REQUIRE_IDENTITY=1`` the claim is refused, so
 the prompt and only shared knowledge is used.  Flip it on once real voiceprint
 identification is wired into the turn; until then the default (0) keeps the
 simulator workflow intact.
+
+The same decision now also gates **writing** (services/dialogue/pipeline.py): an
+unverified voice cannot create a memory either.  Measured 2026-10-06, refusing only
+the read was not enough -- on a device whose turn falls back to the bound account, a
+caregiver or visitor saying "我喜歡吃番茄" was stored as a fact about the person that
+device belongs to.  ``risk_events`` is written from the risk analysis independently,
+so a self-harm disclosure is still raised for human review even when its memory row
+is refused.
 """
 from __future__ import annotations
 

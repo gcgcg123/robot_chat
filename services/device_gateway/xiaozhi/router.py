@@ -78,6 +78,11 @@ class EspSettingsPatch(BaseModel):
     tool_timeout_seconds: float | None = Field(default=None, ge=1, le=60)
     wake_words: list[str] | None = Field(default=None, max_length=16)
     voiceprint_enabled: bool | None = None
+    # 0 means "inherit VOICEPRINT_THRESHOLD", so the floor is 0 and not a plausible cosine value.
+    voiceprint_threshold: float | None = Field(default=None, ge=0, le=0.95)
+    voiceprint_min_margin: float | None = Field(default=None, ge=0, le=0.95)
+    voiceprint_confirm_turns: int | None = Field(default=None, ge=1, le=5)
+    voiceprint_continuity_floor: float | None = Field(default=None, ge=0, le=0.95)
 
 
 class CommandRequest(BaseModel):
@@ -90,13 +95,60 @@ class BindRequest(BaseModel):
 
 
 def _tts_report(provider) -> dict[str, Any]:
-    """Say plainly whether real speech is produced, instead of only naming a class."""
-    from services.tts.provider import DeterministicTts
+    """Say plainly whether real speech is produced, instead of only naming a class.
+
+    The provider declares it (``TtsProvider.produces_audio``) rather than this function guessing
+    from the class name: measured 2026-10-06, ``WindowsTtsProvider`` returns 14080 bytes of pure
+    zeros and still answered ``produces_audio: true`` -- the wrong answer to give someone who is
+    debugging a silent device.
+    """
 
     name = type(provider).__name__
-    if isinstance(provider, DeterministicTts):
-        return {"provider": name, "produces_audio": False, "reason": "silence_provider"}
-    return {"provider": name, "produces_audio": True, "reason": ""}
+    # A provider whose capability needs a probe (``WindowsTtsProvider``) is asked rather than read:
+    # its ``produces_audio`` attribute is False until SAPI has been looked for, so reading it from
+    # here answers "not yet" instead of "no" -- measured 2026-10-06, same checkout, two restarts,
+    # two different answers purely because a turn had happened in between.
+    probe = getattr(provider, "capability", None)
+    if callable(probe):
+        try:
+            audible = bool(probe())
+        except Exception:  # noqa: BLE001 - a broken probe is a diagnostic, not a failed status call
+            audible = bool(getattr(provider, "produces_audio", True))
+    else:
+        audible = bool(getattr(provider, "produces_audio", True))
+    # A provider that can explain itself is preferred over the generic label: "no_sapi_voices" or
+    # "synthesis_failed:RuntimeError" is what an operator can act on.
+    reason = "" if audible else (str(getattr(provider, "diagnostic", "") or "") or "silence_provider")
+    return {"provider": name, "produces_audio": audible, "reason": reason}
+
+
+def _enrollment_summary(events: list[dict[str, Any]], active_by_user: dict[str, int]) -> dict[str, Any] | None:
+    """The last enrollment attempt, for a panel that has no pending item to show.
+
+    ``voiceprint_enrolled`` is the terminal row (templates built or the build failed); a
+    ``voiceprint_enrollment`` row is one sample, accepted or rejected with the reason the operator
+    heard spoken back. Reporting both means "5/5 sentences, 5 templates" is visible *after* the
+    enrollment is over -- which is exactly when the operator is deciding whether it worked.
+    """
+
+    if not events:
+        return None
+    newest = events[0]
+    payload = dict(newest.get("payload") or {})
+    user_id = str(payload.get("user_id") or "")
+    completed = str(newest.get("event_type")) == "voiceprint_enrolled"
+    return {
+        "at": newest.get("created_at"),
+        "completed": completed,
+        "ok": bool(payload.get("ok") if completed else payload.get("accepted")),
+        "user_id": user_id,
+        "reason": str(payload.get("reason") or ""),
+        "samples": int(payload.get("samples") or payload.get("sample_count") or 0),
+        "required_samples": int(payload.get("required_samples") or 0),
+        "templates": int(payload.get("templates") or active_by_user.get(user_id, 0)),
+        "model_version": str(payload.get("model_version") or ""),
+        "kept_previous": bool(payload.get("kept_previous")),
+    }
 
 
 def _port(ctx: GatewayContext) -> int:
@@ -331,6 +383,10 @@ def mount_xiaozhi_routes(application: FastAPI, ctx: GatewayContext) -> None:
         settings_store.export_env(env_updates)
         ctx.settings = EspSettings.from_env(settings_store.effective_env(Path(env_path)))
         ctx.vad_status = create_vad(ctx.settings)[1]
+        # Keep the pending-enrollment sample count in step with the settings the operator just
+        # saved; an enrollment already in flight keeps the count it started with.
+        if ctx.enrollment is not None:
+            ctx.enrollment.required_samples = max(1, int(ctx.settings.enroll_samples or 3))
         with ctx.db() as conn:
             ctx.record_audit(conn, actor_id, "esp_settings_update", target_type="system", target_id="esp", metadata={"changed": sorted(values)})
         return {"ok": True, "settings": ctx.settings.as_dict(), "restart_required": False}
@@ -453,6 +509,88 @@ def mount_xiaozhi_routes(application: FastAPI, ctx: GatewayContext) -> None:
             )
             ctx.record_audit(conn, actor_id, "esp_device_command", target_type="device", target_id=device_id, metadata={"type": payload.type, "delivered": delivered})
         return {"ok": True, "command_id": command_id, "status": status, "delivered": delivered}
+
+    @application.post("/api/devices/{device_id}/enroll-voiceprint", status_code=201)
+    def device_enroll_voiceprint(device_id: str, payload: BindRequest, request: Request):
+        """Start enrolling this device's *own* microphone as (or for) ``payload.user_id``.
+
+        The board then asks for three sentences and stores the samples itself, and the finished
+        templates are built from those recordings -- which is what makes verification work at all:
+        measured 2026-10-06, browser-enrolled templates scored 0.38-0.44 against the same person on
+        an ESP32 (threshold 0.55), because the microphone is part of the embedding.
+        """
+        from services.device_gateway.xiaozhi import enrollment
+
+        with ctx.db() as conn:
+            actor_id = ctx.admin_auth(request, conn, write=True)
+            if store.get_device(conn, device_id) is None:
+                raise HTTPException(status_code=404, detail="device_not_found")
+            user = conn.execute("SELECT status, enrollment_language FROM users WHERE user_id=?", (payload.user_id,)).fetchone()
+            if user is None:
+                raise HTTPException(status_code=404, detail="user_not_found")
+            if user["status"] != "active":
+                raise HTTPException(status_code=409, detail="user_disabled")
+            ctx.record_audit(
+                conn, actor_id, "esp_voiceprint_enrollment_started",
+                target_type="device", target_id=device_id, metadata={"user_id": payload.user_id},
+            )
+            language = str(user["enrollment_language"] or ctx.user_language(payload.user_id) or "zh-CN")
+
+        item = ctx.enrollment.start(device_id, payload.user_id, language)
+        # Speak the first sentence right away when the device is listening: the operator should not
+        # have to read the prompts off the dashboard while standing next to the board.
+        prompts = enrollment.prompts_for(language)
+        ctx.commands.push(device_id, {
+            "command_id": f"enroll-{enrollment.next_request_id()[:8]}",
+            "type": "enroll_start",
+            "payload": {"text": f"我要記住你的聲音。請說：{prompts[0]}" if prompts else "我要記住你的聲音。"},
+        })
+        body = item.as_dict(prompts)
+        body["ok"] = True
+        body["connected"] = ctx.commands.connected(device_id)
+        return body
+
+    @application.get("/api/devices/{device_id}/enroll-voiceprint")
+    def device_enroll_voiceprint_status(device_id: str, request: Request):
+        from services.device_gateway.xiaozhi import enrollment, store
+
+        with ctx.db() as conn:
+            ctx.admin_auth(request, conn)
+            # The pending state is in memory and disappears the moment the enrollment finishes, so
+            # the panel went back to 「未开始」 and a *successful* enrollment was indistinguishable
+            # from nothing having happened (2026-10-06: five samples stored, five templates built,
+            # reported by the operator as a failure). The persisted outcome is reported alongside.
+            events = store.latest_device_event(
+                conn, device_id, ("voiceprint_enrollment", "voiceprint_enrolled"), limit=6
+            )
+            templates = conn.execute(
+                "SELECT user_id, COUNT(*) AS n FROM voiceprint_templates WHERE active=1 GROUP BY user_id"
+            ).fetchall()
+        active_by_user = {str(row["user_id"]): int(row["n"]) for row in templates}
+        last = _enrollment_summary(events, active_by_user)
+        item = ctx.enrollment.get(device_id)
+        if item is None:
+            return {
+                "device_id": device_id,
+                "state": "idle",
+                "prompts": [],
+                "connected": ctx.commands.connected(device_id),
+                "last": last,
+            }
+        body = item.as_dict(enrollment.prompts_for(item.language))
+        body["connected"] = ctx.commands.connected(device_id)
+        body["last"] = last
+        return body
+
+    @application.delete("/api/devices/{device_id}/enroll-voiceprint")
+    def device_enroll_voiceprint_cancel(device_id: str, request: Request):
+        with ctx.db() as conn:
+            actor_id = ctx.admin_auth(request, conn, write=True)
+            ctx.record_audit(
+                conn, actor_id, "esp_voiceprint_enrollment_canceled",
+                target_type="device", target_id=device_id,
+            )
+        return {"ok": ctx.enrollment.cancel(device_id)}
 
     @application.post("/api/devices/{device_id}/bind")
     def device_bind(device_id: str, payload: BindRequest, request: Request):

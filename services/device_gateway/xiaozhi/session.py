@@ -32,14 +32,17 @@ import time
 import uuid
 from typing import Any, Callable
 
-from services.audio.normalize import normalize_audio
+from services.audio.normalize import NormalizedAudio, normalize_audio
 from services.device_gateway.contracts import DeviceEvent as ProtocolEvent
 from services.dialogue.deepseek import DeepSeekClient
 from services.tts.segments import SentenceStreamer, split_speech
 from services.voiceprint.matcher import IdentityResult
+from services.voiceprint.matcher import effective_min_margin, effective_threshold
 from services.voiceprint.matcher import identify as identify_voiceprint
+from services.dialogue.summary import short_term_context
 from services.device_gateway.xiaozhi import pcm, protocol, voicecmd
 from services.device_gateway.xiaozhi import dialogctl
+from services.device_gateway.xiaozhi import enrollment
 from services.device_gateway.xiaozhi.auth import authorize_device
 from services.device_gateway.xiaozhi.config import EspSettings
 from services.device_gateway.xiaozhi.context import GatewayContext, TurnRequest
@@ -55,6 +58,23 @@ STATE_THINKING = "thinking"
 STATE_SPEAKING = "speaking"
 STATE_IDLE = "idle"
 STATE_ERROR = "error"
+
+
+def _pcm_rms(pcm16: bytes) -> int:
+    """Loudness of one utterance, for the speaker-identification event.
+
+    A board microphone at desk distance is far quieter than a PC headset, and this number is what
+    tells "the person was too far away" apart from "the voiceprint threshold was too strict".
+    """
+
+    if not pcm16:
+        return 0
+    total = 0
+    count = 0
+    for (value,) in __import__("struct").iter_unpack("<h", pcm16[: len(pcm16) - len(pcm16) % 2]):
+        total += value * value
+        count += 1
+    return int((total / count) ** 0.5) if count else 0
 
 
 class XiaozhiSession:
@@ -94,6 +114,13 @@ class XiaozhiSession:
         #: True only after a voiceprint match -- distinct from
         #: ``identity_verified``, which is about the device token, not the person.
         self._speaker_verified = False
+        #: How many utterances in a row have matched the same user, and which user that was.
+        #: ``voiceprint_confirm_turns`` decides how many are needed before the match is acted on.
+        self._speaker_streak = 0
+        self._speaker_streak_user: str | None = None
+        #: The previous utterance's embedding, kept only to record how alike two consecutive
+        #: utterances are (same mouth vs a different one in the room).  ~192 floats, no audio.
+        self._last_speaker_vector: list[float] | None = None
 
         self._authorization = authorization
         self._send_lock = asyncio.Lock()
@@ -130,6 +157,10 @@ class XiaozhiSession:
         #: ``listen detect``; ignoring end-of-utterance for a moment keeps it
         #: from being transcribed as the user's opening word.
         self._vad_hold_until = 0.0
+        #: Microphone frames are dropped until this moment: while the robot is speaking and for a
+        #: short tail afterwards, because the board hears its own speaker (see _on_audio).
+        self._mic_mute_until = 0.0
+        self._mic_mute_reported = False
 
         # ---- device tools (MCP / iot) --------------------------------------
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -604,6 +635,23 @@ class XiaozhiSession:
     async def _on_audio(self, packet: bytes) -> None:
         if not self._greeted:
             await self._send_welcome()
+        now = time.time()
+        if self._state == STATE_SPEAKING or now < self._mic_mute_until:
+            # The board hears itself. Its own reply comes back through the microphone (the firmware's
+            # echo cancellation is not enough for a speaker at desk distance), and those frames used
+            # to be treated as the user talking: measured 2026-10-06, a turn transcribed into a
+            # mangled copy of the robot's previous sentence with a voiceprint score of -0.05, and a
+            # voiceprint *enrollment* would have stored the robot's voice as the user's template.
+            # Dropping the frames (and the partial buffer) is the only reliable place to stop it --
+            # the transcript is generated from exactly this audio.
+            self._reset_audio()
+            if not self._mic_mute_reported:
+                self._mic_mute_reported = True
+                with self.ctx.db() as conn:
+                    store.record_device_event(
+                        conn, self.device_id, "audio_ignored", {"reason": "playback", "state": self._state}
+                    )
+            return
         if self._state != STATE_LISTENING:
             # Streaming without an explicit listen start is treated as listening;
             # refusing the frames would silently lose the user's speech.
@@ -630,16 +678,30 @@ class XiaozhiSession:
             # The firmware's own wake-word chime is still ringing right after
             # ``listen detect``; ending the utterance on it would send the user's
             # first word to ASR on its own, or nothing at all.
-            await self._flush_utterance(decision.reason)
+            await self._flush_utterance(decision.reason, speech_ms=decision.voiced_ms)
 
     def _reset_audio(self) -> None:
         self._buffer = bytearray()
         if self._vad is not None:
             self._vad.reset()
 
-    async def _flush_utterance(self, reason: str) -> None:
+    async def _flush_utterance(self, reason: str, *, speech_ms: int | None = None) -> None:
         data = bytes(self._buffer)
         self._reset_audio()
+        if speech_ms is not None and speech_ms < self.settings.vad_min_speech_ms:
+            # Second line of defence, independent of why the VAD ended the utterance: if no frame
+            # ever crossed the gate, the buffer is room noise. Sending it on produced a "." transcript
+            # and a voiceprint score of ~0.3, i.e. a turn that looks like the robot failing to
+            # recognise the person. Reported once per occurrence so the cause stays visible.
+            with self.ctx.db() as conn:
+                store.record_device_event(
+                    conn,
+                    self.device_id,
+                    "audio_ignored",
+                    {"reason": "no_speech", "vad_reason": reason, "buffer_ms": round(len(data) / 2 / max(1, self.settings.uplink_sample_rate) * 1000)},
+                )
+            self._set_state(STATE_IDLE, "")
+            return
         if len(data) < self.settings.min_utterance_bytes:
             # Nothing was actually said (a stray ``listen stop``, a cough).  The
             # state has to fall back to idle here, otherwise the dashboard keeps
@@ -694,6 +756,11 @@ class XiaozhiSession:
         A device that is not speaking ignores this, so it is safe to send on any
         path that might have been mid-playback.
         """
+        # Start the microphone mute window here rather than when the state changes: the speaker
+        # tail and the room's reverb outlive the last Opus frame, and those are exactly the frames
+        # that used to be transcribed as the user.
+        self._mic_mute_until = time.time() + max(0, int(self.settings.mic_mute_after_playback_ms)) / 1000.0
+        self._mic_mute_reported = False
         try:
             await self._send_json(protocol.tts_message("stop", self.session_id))
         except Exception:  # noqa: BLE001 - the socket may already be gone
@@ -738,6 +805,13 @@ class XiaozhiSession:
         try:
             await self._publish("turn.started", {"request_id": request_id, "reason": reason}, turn_id)
             self._set_state(STATE_THINKING, "正在理解…")
+
+            # Voiceprint enrollment, when the operator started one for this device: the utterance is
+            # a *sample*, not something to answer. Handled before transcription and before the model
+            # so an enrollment turn costs no ASR and no LLM call (and cannot be answered as if the
+            # user had asked something).
+            if await self._maybe_enroll_voiceprint(pcm16 or b"", turn_id):
+                return
 
             if text is None:
                 text = await self._transcribe(pcm16 or b"")
@@ -837,6 +911,197 @@ class XiaozhiSession:
         except Exception:  # noqa: BLE001 - a disabled/deleted account falls back
             return "zh-CN"
 
+    async def _maybe_enroll_voiceprint(self, pcm16: bytes, turn_id: str) -> bool:
+        """Consume this utterance as an enrollment sample when one is pending.
+
+        Returns True when the turn was an enrollment turn (the caller must not answer it). The
+        device speaks the next sentence itself, so the operator never has to read anything from the
+        dashboard while standing next to the board.
+        """
+
+        item = self.ctx.enrollment.get(self.device_id) if self.ctx.enrollment else None
+        if item is None:
+            return False
+        if not pcm16:
+            # A text turn ("说一句" from the dashboard) is not a sample; let it behave normally.
+            return False
+
+        self._set_state(STATE_THINKING, "正在登記聲紋…")
+        sample = NormalizedAudio(pcm16, self.settings.uplink_sample_rate, round(len(pcm16) / 2 / self.settings.uplink_sample_rate * 1000))
+        outcome = await asyncio.to_thread(self._store_enrollment_sample, item, sample)
+        item.last_reason = str(outcome.get("reason") or "")
+        if outcome.get("accepted"):
+            step = int(outcome.get("step") or 0)
+            if step not in item.steps_done:
+                item.steps_done.append(step)
+        # Persist the attempt: the pending enrollment lives in memory and is dropped when it
+        # finishes, so without this row the dashboard goes back to 「未开始」 and "it worked" is
+        # indistinguishable from "nothing happened" (2026-10-06: an enrollment that really had
+        # stored five samples and built five templates was reported by the operator as a failure).
+        with self.ctx.db() as conn:
+            store.record_device_event(
+                conn,
+                self.device_id,
+                "voiceprint_enrollment",
+                {
+                    "user_id": item.user_id,
+                    "accepted": bool(outcome.get("accepted")),
+                    "reason": item.last_reason,
+                    "step": outcome.get("step"),
+                    "sample_count": item.sample_count,
+                    "required_samples": item.required_samples,
+                    "audio_ms": sample.duration_ms,
+                    "audio_rms": _pcm_rms(pcm16),
+                },
+            )
+        await self._publish(
+            "voiceprint.enrollment",
+            {
+                "user_id": item.user_id,
+                "accepted": bool(outcome.get("accepted")),
+                "reason": item.last_reason,
+                "step": outcome.get("step"),
+                "sample_count": item.sample_count,
+                "required_samples": item.required_samples,
+            },
+            turn_id,
+        )
+
+        if outcome.get("accepted") and item.sample_count >= item.required_samples:
+            await self._finish_enrollment(item, turn_id)
+            return True
+
+        # Speak the next sentence -- or ask again, using the quality gate's own reason so the user
+        # is told what to fix ("太小聲" vs "環境太吵") instead of just "再說一次".
+        if outcome.get("accepted"):
+            prompt = enrollment.prompt_for(item.language, int(item.next_step or 1))
+            await self._speak_local(f"好，這是第{item.sample_count}句。請說：{prompt}", turn_id)
+        else:
+            hint = enrollment.REJECTION_HINTS.get(item.last_reason, "剛才沒聽清楚")
+            prompt = enrollment.prompt_for(item.language, int(item.next_step or 1))
+            await self._speak_local(f"{hint}，請再說一次：{prompt}", turn_id)
+        self._set_state(STATE_LISTENING, "正在聆聽")
+        return True
+
+    def _store_enrollment_sample(self, item: Any, audio: NormalizedAudio) -> dict[str, Any]:
+        """Quality-gate, embed and store one device sample (runs in a worker thread)."""
+
+        from services.voiceprint import enrollment as voiceprint_enrollment
+
+        provider = self.ctx.voiceprint_provider
+        if provider is None:
+            return {"accepted": False, "reason": "voiceprint_unavailable"}
+        with self.ctx.db() as conn:
+            try:
+                taken = voiceprint_enrollment.take_sample(
+                    conn,
+                    user_id=item.user_id,
+                    provider=provider,
+                    audio=audio,
+                    step=item.next_step,
+                    required=item.required_samples,
+                    # Reject a sample that does not look like the ones already stored: whoever is
+                    # standing in the room is not a property of the audio, and a second voice stored
+                    # as sample 3 becomes a template that matches that person later.
+                    min_similarity=float(getattr(self._live_settings(), "enroll_min_similarity", 0.0) or 0.0),
+                )
+            except ValueError as exc:
+                return {"accepted": False, "reason": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - reported, never raised at the user
+                return {"accepted": False, "reason": f"embedding_failed:{type(exc).__name__}"}
+            conn.commit()
+        return {"accepted": True, "step": taken["step"], "sample_count": taken["sample_count"]}
+
+    async def _finish_enrollment(self, item: Any, turn_id: str) -> None:
+        """Build the templates from the device's own samples and bind the device to that user."""
+
+        from services.voiceprint import enrollment as voiceprint_enrollment
+
+        try:
+            with self.ctx.db() as conn:
+                result = voiceprint_enrollment.build_templates(
+                    conn,
+                    user_id=item.user_id,
+                    provider=self.ctx.voiceprint_provider,
+                    language=item.language,
+                    required=item.required_samples,
+                    keep_previous=bool(getattr(self._live_settings(), "enroll_keep_previous", False)),
+                )
+                store.bind_device_user(conn, self.device_id, item.user_id)
+        except Exception as exc:  # noqa: BLE001
+            item.last_reason = f"template_failed:{type(exc).__name__}"
+            with self.ctx.db() as conn:
+                store.record_device_event(
+                    conn,
+                    self.device_id,
+                    "voiceprint_enrolled",
+                    {"ok": False, "user_id": item.user_id, "reason": item.last_reason},
+                )
+            await self._publish("voiceprint.enrolled", {"ok": False, "reason": item.last_reason}, turn_id)
+            await self._speak_local("登記沒有成功，請稍後再試一次。", turn_id)
+            self.ctx.enrollment.finish(self.device_id)
+            self._set_state(STATE_IDLE, "")
+            return
+
+        # The device is now that person's device: this session keeps talking as them, so memory and
+        # history work on the very next turn instead of only after a reconnect.
+        self.user_id = item.user_id
+        item.completed = True
+        item.result = result
+        self.ctx.enrollment.finish(self.device_id)
+        with self.ctx.db() as conn:
+            store.record_device_event(
+                conn,
+                self.device_id,
+                "voiceprint_enrolled",
+                {
+                    "ok": True,
+                    "user_id": item.user_id,
+                    "samples": int(result.get("samples") or 0),
+                    "required_samples": item.required_samples,
+                    "templates": len(result.get("template_ids") or []),
+                    "model_version": result.get("model_version"),
+                    "kept_previous": bool(result.get("kept_previous")),
+                },
+            )
+        await self._publish(
+            "voiceprint.enrolled",
+            {"ok": True, "user_id": item.user_id, "templates": len(result.get("template_ids") or []), "model_version": result.get("model_version")},
+            turn_id,
+        )
+        await self._speak_local("好了，我記住你的聲音了，以後你說什麼我都認得。", turn_id, settle_seconds=0.4)
+        self._set_state(STATE_IDLE, "")
+
+    def _live_settings(self) -> EspSettings:
+        """The gateway's *current* settings, for the knobs an operator calibrates while a device
+        stays connected.
+
+        Everything else on ``self.settings`` is fixed when the session starts (it shapes the queues,
+        timers and codec the session already built), but the identity and enrollment knobs are meant
+        to be tuned from the dashboard while someone stands in front of the board: reading the
+        snapshot here would mean "save the new threshold, then reconnect the device" -- exactly the
+        moment the operator would rather not touch the hardware.
+        """
+
+        current = getattr(self.ctx, "settings", None)
+        return current if current is not None else self.settings
+
+    @property
+    def voiceprint_threshold(self) -> float:
+        """The acceptance threshold this device actually applies.
+
+        The board may override the shared ``VOICEPRINT_THRESHOLD`` because the microphone is part
+        of the embedding; ``0`` means "no device-specific value, use the shared one".
+        """
+
+        configured = float(getattr(self._live_settings(), "voiceprint_threshold", 0.0) or 0.0)
+        return configured if configured > 0 else effective_threshold()
+
+    @property
+    def voiceprint_min_margin(self) -> float:
+        configured = float(getattr(self._live_settings(), "voiceprint_min_margin", 0.0) or 0.0)
+        return configured if configured > 0 else effective_min_margin()
+
     async def _identify_speaker(self, pcm16: bytes, turn_id: str) -> None:
         """Attribute this utterance to an enrolled user, if anyone matches.
 
@@ -880,23 +1145,52 @@ class XiaozhiSession:
                 identify_voiceprint,
                 vector,
                 templates,
-                threshold=None,
-                min_margin=None,
+                threshold=self.voiceprint_threshold,
+                min_margin=self.voiceprint_min_margin,
                 provider=model_version,
             )
         except Exception as exc:  # noqa: BLE001
             self._speaker_decision = f"embedding_failed:{type(exc).__name__}"
             return
 
+        # How alike this utterance is to the previous one in this session. Recorded, not enforced
+        # unless a floor is configured: see ``voiceprint_continuity_floor``.
+        continuity: float | None = None
+        previous = self._last_speaker_vector
+        if previous is not None and len(previous) == len(vector):
+            try:
+                from services.voiceprint.enrollment import sample_similarity
+
+                continuity = round(float(sample_similarity(vector, previous)), 4)
+            except Exception:  # noqa: BLE001 - pure diagnostics, must never fail a turn
+                continuity = None
+        try:
+            self._last_speaker_vector = [float(value) for value in vector]
+        except (TypeError, ValueError):
+            self._last_speaker_vector = None
+
         self._speaker_decision = result.decision
         self._speaker_score = result.best_score if result.best_score >= 0 else None
-        if result.decision == "accepted" and result.user_id:
-            self.user_id = str(result.user_id)
+        matched = str(result.user_id) if (result.decision == "accepted" and result.user_id) else None
+        if matched and matched == self._speaker_streak_user:
+            self._speaker_streak += 1
+        else:
+            self._speaker_streak = 1 if matched else 0
+            self._speaker_streak_user = matched
+        confirm_turns = max(1, int(self._live_settings().voiceprint_confirm_turns or 1))
+        continuity_floor = float(self._live_settings().voiceprint_continuity_floor or 0.0)
+        # A failed continuity check suppresses the *action*, not the measurement: the streak is left
+        # alone so the next utterance is judged on its own merits again.
+        continuity_failed = bool(
+            continuity_floor > 0 and continuity is not None and continuity < continuity_floor
+        )
+        if matched and self._speaker_streak >= confirm_turns and not continuity_failed:
+            self.user_id = matched
             self._speaker_verified = True
             self._speaker_template_id = result.template_id
         else:
-            # A rejected match must not leave a previous speaker's identity in
-            # place: fall back to the binding that ``_resolve_user`` chose.
+            # A rejected (or not yet confirmed) match must not leave a previous speaker's identity
+            # in place: fall back to the binding that ``_resolve_user`` chose.
             self._speaker_verified = False
             self._speaker_template_id = None
             self._resolve_user()
@@ -908,9 +1202,27 @@ class XiaozhiSession:
                 {
                     "decision": result.decision,
                     "user_id": self.user_id,
+                    # The match that was thrown away, when there was one: without it, "accepted but
+                    # not confirmed" and "nobody matched" look identical in the log.
+                    "candidate_user_id": matched,
+                    "verified": self._speaker_verified,
                     "best_score": round(result.best_score, 6),
+                    "second_score": round(result.second_score, 6) if result.second_score is not None else None,
+                    "second_user_id": result.second_user_id,
                     "template_id": result.template_id,
+                    "streak": self._speaker_streak,
+                    "confirm_turns": confirm_turns,
+                    "continuity_score": continuity,
+                    "continuity_floor": continuity_floor,
                     "model_version": model_version,
+                    # The utterance's own quality, because "which sentence failed?" is the question
+                    # this event exists to answer. Measured 2026-10-06 on real hardware: three
+                    # consecutive turns scored 0.60/0.60/0.65 (accepted) and two later ones 0.16/0.29
+                    # (unknown) with garbled transcripts -- telling those two cases apart needed a
+                    # measurement of the audio, not just the score.
+                    "audio_ms": round(len(pcm16) / 2 / max(1, self.settings.uplink_sample_rate) * 1000),
+                    "audio_rms": _pcm_rms(pcm16),
+                    "threshold": self.voiceprint_threshold,
                 },
             )
         # Keep the dashboard's live view on the person actually talking rather
@@ -927,6 +1239,10 @@ class XiaozhiSession:
                 "user_id": self.user_id,
                 "verified": self._speaker_verified,
                 "score": round(self._speaker_score, 4) if self._speaker_score is not None else None,
+                "second_score": round(result.second_score, 4) if result.second_score is not None else None,
+                "streak": self._speaker_streak,
+                "confirm_turns": confirm_turns,
+                "continuity_score": continuity,
             },
             turn_id,
         )
@@ -941,6 +1257,9 @@ class XiaozhiSession:
         queue both are.
         """
         identity = self._identity()
+        # Built before the connection block because the rolling summary may need it (it refreshes
+        # every few turns, and that refresh is one extra LLM request).
+        llm = None if self.ctx.testing else (self.ctx.providers.get("deepseek") or DeepSeekClient())
         with self.ctx.db() as conn:
             recall = self.ctx.select_for_turn(
                 conn,
@@ -950,7 +1269,13 @@ class XiaozhiSession:
                 embedder=self.ctx.embedding_provider.embed_queries if self.ctx.embedding_provider.available else None,
                 settings=self.ctx.memory_config,
             )
-        llm = None if self.ctx.testing else (self.ctx.providers.get("deepseek") or DeepSeekClient())
+            # Short-term continuity, read in the same connection as the memories -- the browser
+            # entry points have always done this, and leaving it out here meant a device turn could
+            # not refer to the one before it: asked "我刚刚问了什么？" right after a question, the
+            # robot answered "我這邊沒有收到你前面的訊息" (measured on real hardware 2026-10-06).
+            # It is passed the identity for the same reason the memories are: the history is the
+            # user's own words, so an unrecognised voice must not be handed them either.
+            short_term = short_term_context(conn, self.user_id, llm=llm, identity=identity)
         tools = self._llm_tools()
         extra: dict[str, Any] = {}
         if on_delta is not None and self.settings.llm_stream:
@@ -967,6 +1292,8 @@ class XiaozhiSession:
                 llm=llm,
                 rag_provider=self.ctx.providers.get("rag"),
                 memories=recall.selected,
+                history=short_term.history,
+                summary=short_term.summary,
                 request_id=str(uuid.uuid4()),
                 memory_settings=self.ctx.memory_config,
                 tools=tools or None,
@@ -992,6 +1319,8 @@ class XiaozhiSession:
                 llm=llm,
                 rag_provider=self.ctx.providers.get("rag"),
                 memories=recall.selected,
+                history=short_term.history,
+                summary=short_term.summary,
                 request_id=str(uuid.uuid4()),
                 memory_settings=self.ctx.memory_config,
                 tools=tools or None,
@@ -1358,6 +1687,20 @@ class XiaozhiSession:
             with self.ctx.db() as conn:
                 store.mark_command(conn, command_id, "delivered")
             await self._start_text_turn(text)
+            return
+
+        if command_type == "enroll_start":
+            text = str(payload.get("text", "")).strip()
+            if not text:
+                with self.ctx.db() as conn:
+                    store.mark_command(conn, command_id, "rejected", reason="text_required")
+                return
+            with self.ctx.db() as conn:
+                store.mark_command(conn, command_id, "delivered")
+            # A synthetic turn id: this is TTS without a dialogue turn, and the firmware only
+            # correlates tts start/stop to play the audio it receives.
+            await self._speak_local(text, f"enroll-{uuid.uuid4().hex[:8]}", settle_seconds=0.3)
+            self._set_state(STATE_LISTENING, "正在聆聽")
             return
 
         if command_type == "abort":

@@ -132,6 +132,18 @@
               <input id="esp-voiceprint-enabled" class="esp-switch" type="checkbox" />
             </div>
             <div class="esp-toggle">
+              <label>设备端声纹阈值<small>IOT_ESP_VOICEPRINT_THRESHOLD（0.5–0.95；留空/0 沿用 VOICEPRINT_THRESHOLD。无线麦克风会把所有人的分数拉到中间，板子需要单独校准）</small></label>
+              <input id="esp-voiceprint-threshold" class="esp-input" type="number" min="0" max="0.95" step="0.01" />
+            </div>
+            <div class="esp-toggle">
+              <label>连续几句才算本人<small>IOT_ESP_VOICEPRINT_CONFIRM_TURNS（1–5；2 可挡掉偶然的一次命中，挡不住稳定的相似声音）</small></label>
+              <input id="esp-voiceprint-confirm-turns" class="esp-input" type="number" min="1" max="5" step="1" />
+            </div>
+            <div class="esp-toggle">
+              <label>连续语音相似下限<small>IOT_ESP_VOICEPRINT_CONTINUITY_FLOOR（0–0.95；0 只记录 continuity_score 不拦截，用来测「换人说话」能不能被识别出来）</small></label>
+              <input id="esp-voiceprint-continuity-floor" class="esp-input" type="number" min="0" max="0.95" step="0.01" />
+            </div>
+            <div class="esp-toggle">
               <label>设备控制工具<small>IOT_ESP_TOOLS（音量／亮度等，需固件支持 MCP）</small></label>
               <input id="esp-tools-enabled" class="esp-switch" type="checkbox" />
             </div>
@@ -266,7 +278,7 @@
     </div>
   </dialog>
 
-  <script src="/dashboard-assets/devices.js?v=20260915-12"></script>
+  <script src="/dashboard-assets/devices.js?v=20261006-voiceprint"></script>
   <script src="/dashboard-assets/login.js?v=20260915-12"></script>
   <script src="/dashboard-assets/profile.js?v=20260915-12"></script>
 </body>

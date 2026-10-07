@@ -389,6 +389,23 @@ def process_text(
             memory_candidates.append(item)
             print(f"[memory] safety memory key={item['slot_key']} risk={risk['risk_level']} "
                   f"request_id={request_id}", flush=True)
+    # Writing is gated by the same identity check as reading. Measured 2026-10-06: under
+    # IOT_MEMORY_REQUIRE_IDENTITY=1 an unverified voice could no longer *read* personal memory but
+    # could still *write* into whichever account it was attributed to (on a device, the bound user)
+    # -- so a caregiver or visitor saying "我喜歡吃番茄" landed in the elder's long-term memory.
+    # The read side already refuses a claim; this makes the write side agree with it.
+    #
+    # Nothing safety-critical is lost by dropping a disclosure here: risk_events is written from
+    # `risk` independently of this list (services/dialogue/app.py), so the human-review trail is
+    # unaffected -- only the mis-attributed, auto-approved memory is not created.
+    if memory_candidates and str(getattr(identity, "decision", "accepted")) != "accepted":
+        # `provider` carries the reason string on this dataclass (identity_required / selected_user),
+        # which is what tells "the flag is on and nobody verified this voice" apart from a failed
+        # match.
+        print(f"[memory] dropped {len(memory_candidates)} candidate(s): "
+              f"identity={getattr(identity, 'provider', '') or 'unverified'} request_id={request_id}",
+              flush=True)
+        memory_candidates = []
     return DialogueResult(
         turn_id=turn_value,
         session_id=session_id,

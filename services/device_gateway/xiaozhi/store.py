@@ -257,6 +257,36 @@ def recent_device_events(conn: sqlite3.Connection, device_id: str, limit: int = 
     return result
 
 
+def latest_device_event(
+    conn: sqlite3.Connection,
+    device_id: str,
+    event_types: tuple[str, ...],
+    *,
+    limit: int = 1,
+) -> list[dict[str, Any]]:
+    """The most recent rows of the given types, newest first.
+
+    A targeted lookup rather than a filter over ``recent_device_events``: heartbeats and
+    ``speaker_identified`` rows arrive constantly, so "the last enrollment attempt" would fall out of
+    any fixed-size window within minutes.
+    """
+
+    if not event_types:
+        return []
+    placeholders = ",".join("?" for _ in event_types)
+    rows = conn.execute(
+        f"SELECT * FROM device_events WHERE device_id=? AND event_type IN ({placeholders})"
+        " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (device_id, *event_types, max(1, min(int(limit), 50))),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json") or "{}")
+        result.append(item)
+    return result
+
+
 def list_active_templates(conn: sqlite3.Connection, model_version: str) -> list[dict[str, Any]]:
     """Enrolled voiceprints a device turn may be matched against.
 

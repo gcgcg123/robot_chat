@@ -98,6 +98,23 @@
           <button class="cmd-btn" id="unbind-btn" type="button">解除绑定</button>
         </div>
       </article>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>声纹登记（用这台设备）</h2>
+            <p>让使用者对着<strong>这台设备</strong>说三句，模板就用它的麦克风生成——用浏览器登记的模板换个麦克风相似度只有 0.38~0.44，低于 0.55 的门槛</p>
+          </div>
+          <span class="panel-tag" id="enroll-tag">未开始</span>
+        </div>
+        <ol id="enroll-prompts" class="empty-state">选择使用者后开始，设备会自己念出要说的句子</ol>
+        <div class="panel-actions" style="margin-top:14px">
+          <select id="enroll-user"></select>
+          <button class="cmd-btn primary" id="enroll-btn" type="button">开始登记</button>
+          <button class="cmd-btn" id="enroll-cancel-btn" type="button">取消</button>
+        </div>
+        <div id="enroll-status" class="empty-state">尚未开始</div>
+      </article>
     </section>
 
     <section class="panel">
@@ -113,6 +130,6 @@
     <footer>情绪陪伴机器人 · 仅供技术研究与 IoT 项目展示，不提供医疗诊断。</footer>
   </main>
 
-  <script src="/dashboard-assets/device_detail.js?v=20260915-12"></script>
+  <script src="/dashboard-assets/device_detail.js?v=20261006-enroll-history"></script>
 </body>
 </html>
